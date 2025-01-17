@@ -24,6 +24,7 @@ def test_entropy_model():
         dataset_files=[ARROW_TEST_DATA],
         row_num=0,
         arrow_batch_size=100,
+        s3_profile=None,
     )
     arrow_file = initial_state.build()
     tokenizer_args = TokenizerArgs(
