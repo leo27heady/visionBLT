@@ -26,10 +26,9 @@ model:
   vocab_size: 260
   dim_token: 256
   patch_size: 6
-  tokenization_mode: "bytes"
   patching_mode: "space"
   tie_local_encoder_decoder_logits: false
-  data_loader_patching: true
+  patch_in_forward: false
   max_encoder_seq_length: 12288
   pad_to_max_length: true
   patching_threshold: 3.1439168453216553

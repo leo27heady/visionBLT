@@ -53,7 +53,7 @@ BltIterator = Iterator[tuple[BltExample, DataLoaderState]]
 class BltSequence(BaseModel):
     tokens: list[int]
     mask: list[bool]
-    patch_lengths: list[int]
+    patch_lengths: list[int] | None
 
 
 @dataclass
