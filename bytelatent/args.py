@@ -93,6 +93,8 @@ class DataloaderArgs(BaseModel):
     max_encoder_seq_length: int = 12288
     enable_byte_ngrams: bool = False
 
+    add_patches: bool = True
+
     tokenizer_args: TokenizerArgs = TokenizerArgs()
     patcher_args: PatcherArgs = PatcherArgs()
 
@@ -120,6 +122,7 @@ class DataloaderArgs(BaseModel):
                 looping_iterator,
                 patcher_args=self.patcher_args,
                 tokenizer_args=self.tokenizer_args,
+                add_patches=self.add_patches,
             )
             sequence_iterator = SequenceIterator(
                 preprocess_iterator,
@@ -141,13 +144,19 @@ class DataloaderArgs(BaseModel):
             source_to_iterator=source_to_sequence_iterators,
         )
         tokenizer = self.tokenizer_args.build()
+        if self.tokenizer_args.name == "bytes":
+            # TODO: Check this with Artidoro
+            pad_id = 0
+        else:
+            pad_id = tokenizer.boe_id
         packing_args = PackingArgs(
             batch_size=self.batch_size,
             seq_len=self.seq_len,
-            pad_id=tokenizer.boe_id,
+            pad_id=pad_id,
             max_length=self.max_encoder_seq_length,
             pad_to_max_length=self.pad_to_max_length,
             enable_byte_ngrams=self.enable_byte_ngrams,
+            tokenizer_name=self.tokenizer_args.name,
         )
         packing_iterator = PackingIterator(sampling_iterator, packing_args=packing_args)
         if self.load_async:
@@ -180,7 +189,7 @@ class TrainArgs(BaseModel):
 
     data: DataloaderArgs = DataloaderArgs()
     optim: OptimArgs = OptimArgs()
-    model: ByteLatentTransformerArgs = ByteLatentTransformerArgs()
+    model: ByteLatentTransformerArgs | None = ByteLatentTransformerArgs()
     # This is only needed for training the entropy model
     entropy_model: LMTransformerArgs | None = None
     # Instead of training main model, train entropy model

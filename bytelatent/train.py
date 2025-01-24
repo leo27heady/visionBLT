@@ -51,6 +51,7 @@ from bytelatent.transformer import (
     get_no_recompute_ops,
     get_num_flop_per_token,
     tp_parallelize,
+    LMTransformer,
 )
 
 logger = logging.getLogger()
@@ -103,9 +104,14 @@ class TrainState(Stateful):
 
 
 def validate_train_args(args: TrainArgs, output_size: int):
-    if args.model.vocab_size < 0:
+    assert args.model is not None or args.entropy_model is not None
+    if args.model is not None:
         logger.info(f"Setting model output size to {args.model.vocab_size}")
         args.model.vocab_size = output_size
+
+    if args.entropy_model is not None:
+        logger.info(f"Setting model output size to {args.entropy_model.vocab_size}")
+        args.entropy_model.vocab_size = output_size
 
     assert args.dump_dir, "Dump dir not set"
 
@@ -147,7 +153,10 @@ def validate_train_args(args: TrainArgs, output_size: int):
                 and args.distributed.dp_replicate == get_world_size()
             )
 
-    args.model.max_seqlen = args.data.seq_len
+    if args.model is not None:
+        args.model.max_seqlen = args.data.seq_len
+    if args.entropy_model is not None:
+        args.entropy_model.max_seqlen = args.data.seq_len
 
     if args.distributed.tp_size == 1:
         logger.warning(
@@ -237,7 +246,14 @@ def train(args: TrainArgs):
 
         # Initializing Model in meta device allows us to initialize models much bigger than 1 gpu's memory
         with torch.device("meta"):
-            model = ByteLatentTransformer(args.model)
+            if args.train_entropy_model:
+                assert args.entropy_model is not None
+                model = LMTransformer(args.entropy_model)
+                model_args = args.entropy_model
+            else:
+                assert args.model is not None
+                model = ByteLatentTransformer(args.model)
+                model_args = args.model
         logger.info("Model is built !")
 
         model_param_count = get_num_params(model)
@@ -247,7 +263,7 @@ def train(args: TrainArgs):
             world_mesh,
             args.model,
             args.distributed,
-            fsdp_grouping_plan=build_fsdp_grouping_plan(args.model),
+            fsdp_grouping_plan=build_fsdp_grouping_plan(model_args),
             tp_parallelize=tp_parallelize,
             no_recompute_ops=get_no_recompute_ops(),
         )
@@ -267,7 +283,7 @@ def train(args: TrainArgs):
             model.rope_embeddings.reset_parameters()  # For RoPe initialization since it's a buffer it might not be loaded
         else:
             with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
-                torch.manual_seed(args.model.seed)
+                torch.manual_seed(model_args.seed)
                 model.init_weights()
         check_model_value_range(model, range=10.0, std=1.0)
 
@@ -342,10 +358,17 @@ def train(args: TrainArgs):
                 batch.x,
             ).cuda()
             batch_y = torch.from_numpy(batch.y).cuda()
-            batch_patch_lengths = torch.from_numpy(batch.patch_lengths).cuda()
+            if batch.patch_lengths is None:
+                batch_patch_lengths = None
+            else:
+                batch_patch_lengths = torch.from_numpy(batch.patch_lengths).cuda()
             mask = None if batch.mask is None else torch.from_numpy(batch.mask).cuda()
 
-            if args.model.encoder_enable_byte_ngrams and batch.ngram_ids is None:
+            if (
+                not args.train_entropy_model
+                and args.model.encoder_enable_byte_ngrams
+                and batch.ngram_ids is None
+            ):
                 raise ValueError(
                     "Cannot enable byte ngrams and have batch.ngram_ids be None"
                 )
@@ -408,9 +431,12 @@ def train(args: TrainArgs):
                     next(probe_mod.parameters()).grad is None
                 ), "Probe model shouldn't have grads at this point"
 
-            pred = model(
-                batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids
-            )
+            if args.train_entropy_model:
+                pred = model(batch_x)
+            else:
+                pred = model(
+                    batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids
+                )
 
             loss, _ = compute_loss(pred, batch_y, mask, train_state.scale)
 
@@ -474,9 +500,9 @@ def train(args: TrainArgs):
                 # Use xformer's analyze profile trace to get actual measurement
                 FLOPS = (
                     get_num_flop_per_token(
-                        model_param_count - args.model.vocab_size * args.model.dim,
-                        args.model.n_layers,
-                        args.model.dim,
+                        model_param_count - model_args.vocab_size * model_args.dim,
+                        model_args.n_layers,
+                        model_args.dim,
                         args.data.seq_len,
                     )
                     * wps

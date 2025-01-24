@@ -166,3 +166,4 @@ figures/
 .vscode/
 .DS_Store
 internal/
+jobs_parallel-copy/

@@ -411,6 +411,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     n_heads: int = 8
     # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
+    patch_in_forward: bool = False
 
     # Architecture and dimensions
     dim_token: int = 256
@@ -422,7 +423,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     n_layers_local_encoder: int = 8
 
     # Tokenization and patching
-    tokenization_mode: str = "bpe"
     patch_size: float | None = None
     patching_mode: str | None = None
     patching_threshold: float | None = None
@@ -430,7 +430,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     monotonicity: bool = False
     patching_batch_size: int = 1
     patching_device: str = "cuda"
-    data_loader_patching: bool = False
     max_patch_length: int | None = None
 
     # Encoder/Decoder configuration
@@ -856,7 +855,7 @@ class ByteLatentTransformer(nn.Module):
             self.output.weight = self.tok_embeddings.weight
 
         # Patcher module
-        if not args.data_loader_patching:
+        if args.patch_in_forward:
             self.patcher = Patcher(
                 PatcherArgs(
                     patch_size=args.patch_size,
