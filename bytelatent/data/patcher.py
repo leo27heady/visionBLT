@@ -22,6 +22,8 @@ class PatchingModeEnum(str, Enum):
     bpe = "bpe"
     bpe_patcher = "bpe_patcher"
     space = "space"
+    static = "static"
+    byte = "byte"
 
 
 class PatcherArgs(BaseModel):
@@ -34,7 +36,6 @@ class PatcherArgs(BaseModel):
     max_patch_length: int | None = None
     patch_size: float = 4.5
     patching_batch_size: int = 1
-    data_loader_patching: bool = False
     device: str = "cuda"
     monotonicity: bool = False
     log_time: bool = False
@@ -486,7 +487,6 @@ class Patcher:
         self.max_patch_length = patcher_args.max_patch_length
         self.patch_size = patcher_args.patch_size
         self.patching_batch_size = patcher_args.patching_batch_size
-        self.data_loader_patching = patcher_args.data_loader_patching
         self.device = patcher_args.device
         self.monotonicity = patcher_args.monotonicity
         self.log_time = patcher_args.log_time
@@ -528,7 +528,7 @@ class Patcher:
         seq_len_next_tok = seq_len + 1 if include_next_token else seq_len
         scores = None
         # STATIC
-        if self.patching_mode is None:
+        if self.patching_mode == PatchingModeEnum.static:
             patch_lengths = torch.zeros(
                 (bs, math.ceil(seq_len_next_tok / self.patch_size)),
                 dtype=tokens.dtype,
@@ -536,6 +536,10 @@ class Patcher:
             ).fill_(self.patch_size)
             if seq_len_next_tok % self.patch_size != 0:
                 patch_lengths[:, -1] = seq_len_next_tok % self.patch_size
+        elif self.patching_mode == PatchingModeEnum.byte:
+            patch_lengths = torch.ones(
+                (bs, seq_len_next_tok), dtype=tokens.dtype, device=tokens.device
+            )
         # ENTROPY
         elif self.patching_mode == PatchingModeEnum.entropy:
             if self.log_time:
