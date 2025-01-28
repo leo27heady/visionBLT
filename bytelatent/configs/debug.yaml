@@ -98,11 +98,4 @@ logging:
   freq: 10
 
 eval_on_gpus: 8
-eval:
-  dataset_dir: /checkpoint/amaia/codegen/datasets/eval
-  tasks: boolq,hellaswag,nq,piqa,siqa,tqa,winogrande,obqa,arc_easy,arc_challenge,race.middle,race.high,gsm8k,math,bbh,copa,human_eval_plus,mbpp,mmlu
-  generator:
-    max_tokens: 65536
-    dtype: bf16
-
-  mp_size: 1
+eval: null

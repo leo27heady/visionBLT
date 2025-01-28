@@ -72,11 +72,4 @@ logging:
   freq: 10
 
 eval_on_gpus: 8
-eval:
-  dataset_dir: ???
-  tasks: ???
-  generator:
-    max_tokens: 65536
-    dtype: bf16
-
-  mp_size: 1
+eval: null
