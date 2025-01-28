@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from timeit import default_timer as timer
-from typing import Any, Dict, Type, TypeVar
+from typing import Any, TypeVar
 
 import torch
 import torch.distributed
@@ -23,9 +23,13 @@ from torch.distributed._tensor import DTensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim import lr_scheduler
 
-from bytelatent.args import TrainArgs
+from bytelatent.args import TrainArgs, parse_args
 from bytelatent.checkpoint import CheckpointManager, load_from_checkpoint
-from bytelatent.data.data_types import DataLoaderState
+from bytelatent.data.iterators.multiprocess_iterator import (
+    MultiprocessIterator,
+    MultiprocessIteratorState,
+)
+from bytelatent.data.iterators.packing_iterator import PackingIteratorState
 from bytelatent.distributed import (
     check_model_value_range,
     clean_env,
@@ -39,6 +43,7 @@ from bytelatent.distributed import (
     setup_env,
     setup_torch_distributed,
 )
+from bytelatent.eval import EVAL_FOLDER_NAME, launch_eval
 from bytelatent.logger import init_logger
 from bytelatent.metrics import GPUMemoryMonitor, MetricLogger, get_num_params
 from bytelatent.model.blt import ByteLatentTransformer
@@ -70,36 +75,49 @@ def flatten_dict(d, parent_key="", sep="_"):
     return dict(items)
 
 
-def dataclass_from_dict(cls: Type[T], data: dict, strict: bool = True) -> T:
-    """
-    Converts a dictionary to a dataclass instance, recursively for nested structures.
-    """
-    base = OmegaConf.structured(cls())
-    OmegaConf.set_struct(base, strict)
-    override = OmegaConf.create(data)
-    return OmegaConf.to_object(OmegaConf.merge(base, override))
+def get_iterator_state_name(iterator_state):
+    if isinstance(iterator_state, MultiprocessIteratorState):
+        return "multiprocess"
+    elif isinstance(iterator_state, PackingIteratorState):
+        return "packing"
+    else:
+        raise ValueError(f"Unsupported iterator to get name from: {iterator_state}")
 
 
+# TODO: Make this pydantic based instead of data class based
+# TODO: Generalize this to any iterator state
 @dataclass
 class TrainState(Stateful):
     step: int  # Nb of steps taken by the optimizer
     acc_step: int  # Nb of accumulation steps done since last optimizer step
     scheduler: lr_scheduler.LambdaLR
-    data_loader_state: DataLoaderState
+    data_loader_state: MultiprocessIteratorState | PackingIteratorState
     scale: float = 1.0
+    data_loader_class: str | None = None
 
-    def state_dict(self) -> Dict[str, Any]:
+    def state_dict(self) -> dict[str, Any]:
         return {
             "step": self.step,
             "acc_step": self.acc_step,
-            "data_loader_state": self.data_loader_state.dict(),
+            "data_loader_state": self.data_loader_state.model_dump(),
+            "data_loader_class": get_iterator_state_name(self.data_loader_state),
             "scheduler": self.scheduler.state_dict(),
         }
 
     def load_state_dict(self, state_dict):
         self.step = state_dict["step"]
         self.acc_step = state_dict["acc_step"]
-        self.data_loader_state = DataLoaderState(**state_dict["data_loader_state"])
+        self.data_loader_class = state_dict["data_loader_class"]
+        if self.data_loader_class == "multiprocess":
+            self.data_loader_state = MultiprocessIteratorState(
+                **state_dict["data_loader_state"]
+            )
+        elif self.data_loader_class == "packing":
+            self.data_loader_state = PackingIteratorState(
+                **state_dict["data_loader_state"]
+            )
+        else:
+            raise ValueError(f"invalid data loader class: {self.data_loader_class}")
         self.scheduler.load_state_dict(state_dict["scheduler"])
 
 
@@ -345,7 +363,10 @@ def train(args: TrainArgs):
         nwords_since_last_log = 0
         time_last_log = timer()
         gc.collect()
-        while train_state.step < args.steps:
+        saved = False
+        while train_state.step < args.steps and (
+            args.max_steps is None or train_state.step < args.max_steps
+        ):
             # We constrain train_state.acc_step to be in range 0 to args.grad_acc_steps - 1
             train_state.acc_step += 1
             train_state.acc_step = train_state.acc_step % args.grad_acc_steps
@@ -552,7 +573,6 @@ def train(args: TrainArgs):
                     f"  pow: {gpu_mem_stats.power_draw/1000} W"
                 )
 
-            saved = False
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
             ) or every_n_steps(train_state, args.checkpoint.eval.every, acc_step=0):
@@ -567,18 +587,14 @@ def train(args: TrainArgs):
             if args.eval is not None and every_n_steps(
                 train_state, args.checkpoint.eval.every, acc_step=0
             ):
-                from apps.main.eval import EVAL_FOLDER_NAME, EvalArgs, launch_eval
-
-                eval_args = dataclass_from_dict(EvalArgs, args.eval)
+                eval_args = args.eval
 
                 eval_args.global_step = train_state.step
                 eval_args.ckpt_dir = str(checkpoint.existing_saves[-1])
-                eval_args.dump_dir = str(
-                    os.path.join(
-                        args.dump_dir,
-                        "evals",
-                        EVAL_FOLDER_NAME.format(train_state.step),
-                    )
+                eval_args.dump_dir = os.path.join(
+                    args.dump_dir,
+                    "evals",
+                    EVAL_FOLDER_NAME.format(train_state.step),
                 )
                 eval_args.metric_log_dir = args.dump_dir
                 if args.async_eval_gpus is None:
@@ -619,6 +635,9 @@ def train(args: TrainArgs):
             args,
             device_mesh=world_mesh,
         )
+    if isinstance(data_loader, MultiprocessIterator):
+        logger.info("Closing MP iterator before exiting")
+        data_loader.shutdown()
     gc.collect()
 
 
@@ -661,15 +680,7 @@ def main():
 
     Plus all the default values in TrainArgs dataclass.
     """
-    cli_args = OmegaConf.from_cli()
-    file_cfg = OmegaConf.load(cli_args.config)
-    # We remove 'config' attribute from config as the underlying DataClass does not have it
-    del cli_args.config
-
-    default_cfg = OmegaConf.create(TrainArgs().model_dump())
-    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
-    cfg = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-    train_args = TrainArgs.model_validate(cfg)
+    train_args = parse_args(TrainArgs)
     if train_args.debug_dynamo:
         import torch._dynamo
 

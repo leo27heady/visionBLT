@@ -40,16 +40,6 @@ class BltPackTokensState(BaseModel):
     n_views: int = 2
 
 
-class DataLoaderState(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    multi_choice_state: MultiChoiceState
-    pack_tokens_state: BltPackTokensState
-    prefetch_state: PrefetchState
-
-
-BltIterator = Iterator[tuple[BltExample, DataLoaderState]]
-
-
 class BltSequence(BaseModel):
     tokens: list[int]
     mask: list[bool]
