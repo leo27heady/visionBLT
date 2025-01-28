@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import fsspec
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
@@ -21,6 +22,7 @@ from torch.distributed.checkpoint.state_dict import (
     set_state_dict,
 )
 
+from bytelatent.data.file_util import get_fs
 from bytelatent.distributed import get_is_master
 
 logger = logging.getLogger("CHECKPOINT")
@@ -51,13 +53,14 @@ class CheckpointArgs(BaseModel):
     path: str | None = None
     init_ckpt_path: str | None = None
     continue_training_from_init: bool = False
+    s3_profile: str | None = None
 
 
 def _get_key_step(name: str):
     return int(re.findall(RE_DIGITS, name)[-1])
 
 
-def consolidate_checkpoints(ckpt_dir: str):
+def consolidate_checkpoints(fs: fsspec.AbstractFileSystem, ckpt_dir: str):
     """
     Consolidates all FSDP checkpoints in a directory to a single file
     Consolidate checkpoint is saved in a subdirectory of ckpt_dir
@@ -102,15 +105,17 @@ def load_from_checkpoint(
     dcp.load(state_dict, checkpoint_id=ckpt_dir)
 
 
+# TODO: Rewrite the file operations here to use fsspec to enable s3 writing.
 class CheckpointManager:
     def __init__(self, args: CheckpointArgs):
         self.path = args.path
+        self.fs = get_fs(self.path, s3_profile=args.s3_profile)
         self.dump_every = args.dump
         self.eval_every = args.eval
         self.init_ckpt_path = args.init_ckpt_path
         self.continue_training_from_init = args.continue_training_from_init
 
-        assert os.path.exists(
+        assert self.fs.exists(
             self.path
         ), f"Path {self.path} does not exist and needs to be created before using CheckpointManager (use instantiate_and_make_dir)"
 
