@@ -8,7 +8,6 @@ import sys
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from timeit import default_timer as timer
 from typing import Any, TypeVar
 
@@ -18,13 +17,13 @@ import torch.nn.functional
 import torch.nn.functional as F
 import wandb
 import xformers.profiler
-from omegaconf import OmegaConf
 from torch.distributed._tensor import DTensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim import lr_scheduler
 
 from bytelatent.args import TrainArgs, parse_args
 from bytelatent.checkpoint import CheckpointManager, load_from_checkpoint
+from bytelatent.data.file_util import get_fs
 from bytelatent.data.iterators.multiprocess_iterator import (
     MultiprocessIterator,
     MultiprocessIteratorState,
@@ -136,11 +135,12 @@ def validate_train_args(args: TrainArgs, output_size: int):
 
     if args.checkpoint.path is None:
         logger.info(f"Setting checkpoint path to {args.checkpoint.path}")
-        args.checkpoint.path = str(Path(args.dump_dir) / "checkpoints")
+        args.checkpoint.path = os.path.join(args.dump_dir, "checkpoints")
 
+    data_fs = get_fs(args.data.root_dir, s3_profile=args.data.s3_profile)
     for source in args.data.sources:
         data_path = os.path.join(args.data.root_dir, source)
-        assert os.path.exists(data_path), f"{data_path} doesn't exist"
+        assert data_fs.exists(data_path), f"{data_path} doesn't exist"
 
     if (
         args.distributed.dp_replicate
@@ -255,10 +255,15 @@ def train(args: TrainArgs):
             args,
             tokenizer.n_words,
         )
+        dump_fs = get_fs(args.dump_dir, s3_profile=args.checkpoint.s3_profile)
         if get_is_master():
-            os.makedirs(args.dump_dir, exist_ok=True)
-            args.dump_to_yaml_file(Path(args.dump_dir) / "config.yaml")
-        init_logger(Path(args.dump_dir) / "train.log")
+            dump_fs.mkdirs(args.dump_dir, exist_ok=True)
+            config_yaml_str = args.dump_to_yaml_str()
+            logging.info("TrainArgs: \n%s", config_yaml_str)
+            dump_fs.write_text(
+                os.path.join(args.dump_dir, "config.yaml"), config_yaml_str
+            )
+        init_logger(os.path.join(args.dump_dir, "train.log"), fs=dump_fs)
         init_signal_handler(set_preemption_flag)  # For handling preemption signals.
         setup_env(args.env)
         setup_torch_distributed(args.distributed)
@@ -313,8 +318,11 @@ def train(args: TrainArgs):
 
         if args.checkpoint.init_ckpt_path:
             logger.info(f"Loading initial model from {args.checkpoint.init_ckpt_path}")
+            ckpt_fs = get_fs(
+                args.checkpoint.init_ckpt_path, s3_profile=args.checkpoint.s3_profile
+            )
             load_from_checkpoint(
-                args.checkpoint.init_ckpt_path, model, model_key="model"
+                ckpt_fs, args.checkpoint.init_ckpt_path, model, model_key="model"
             )  # Put model_key="" if its directly the model checkpoint
             model.rope_embeddings.reset_parameters()  # For RoPe initialization since it's a buffer it might not be loaded
         else:
@@ -351,13 +359,14 @@ def train(args: TrainArgs):
         checkpoint.load(model, optimizer, train_state, world_mesh)
         # Either load from latest checkpoint or start from scratch
         if args.probe_freq is not None:
+            # TODO: Convert this to fsspec compatible
             if get_is_master():
-                os.makedirs(Path(args.dump_dir) / "probe", exist_ok=True)
+                os.makedirs(os.path.join(args.dump_dir, "probe"), exist_ok=True)
             torch.distributed.barrier()
             probe = AutoProbeD(
                 model,
                 (
-                    Path(args.dump_dir) / "probe" / f"probe.{dp_rank}.jsonl"
+                    os.path.join(args.dump_dir, "probe", f"probe.{dp_rank}.jsonl")
                     if (dp_rank % 128 == 0)
                     else None
                 ),
@@ -369,7 +378,7 @@ def train(args: TrainArgs):
         # train loop
         model.train()
         metric_logger = context_stack.enter_context(
-            MetricLogger(Path(args.dump_dir) / "metrics.jsonl", args)
+            MetricLogger(os.path.join(args.dump_dir, "metrics.jsonl"), args, fs=dump_fs)
         )
         data_loader = train_state.data_loader_state.build()
         batch_iterator = data_loader.create_iter()

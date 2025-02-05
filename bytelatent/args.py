@@ -294,6 +294,14 @@ class TrainArgs(BaseModel):
     def dump_to_yaml_file(
         self, path: str, log_config: bool = True, sort_keys: bool = True
     ):
+        yaml_str = self.dump_to_yaml_str(sort_keys=sort_keys)
+        with open(path, "w") as f:
+            if log_config:
+                logger.info("Using the following config for this run:")
+                logger.info(yaml_str)
+            f.write(yaml_str)
+
+    def dump_to_yaml_str(self, sort_keys: bool = True):
         model_dict = self.model_dump(mode="json")
         yaml_str = yaml.dump(
             model_dict,
@@ -301,8 +309,4 @@ class TrainArgs(BaseModel):
             sort_keys=sort_keys,
             default_flow_style=False,
         )
-        with open(path, "w") as f:
-            if log_config:
-                logger.info("Using the following config for this run:")
-                logger.info(yaml_str)
-            f.write(yaml_str)
+        return yaml_str
