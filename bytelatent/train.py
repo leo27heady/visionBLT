@@ -47,6 +47,7 @@ from bytelatent.eval import EVAL_FOLDER_NAME, launch_eval
 from bytelatent.logger import init_logger
 from bytelatent.metrics import GPUMemoryMonitor, MetricLogger, get_num_params
 from bytelatent.model.blt import ByteLatentTransformer
+from bytelatent.norms import fixed_clip_grad_norm_
 from bytelatent.optim import build_optimizer
 from bytelatent.probe import AutoProbeD
 from bytelatent.profiling import maybe_run_profiler
@@ -147,9 +148,26 @@ def validate_train_args(args: TrainArgs, output_size: int):
         * args.distributed.tp_size
         != get_world_size()
     ):
+        logging.info("Modifying TrainArgs distributed config")
         assert get_world_size() % args.distributed.dp_shard == 0
+        logging.info("World size: %s", get_world_size())
+        logging.info(
+            "Existing setting: train_args.distributed.dp_shard=%s",
+            args.distributed.dp_shard,
+        )
+        logging.info(
+            "Setting train_args.distributed.dp_replicate=%s, was dp_replicate=%s",
+            get_world_size() // args.distributed.dp_shard,
+            args.distributed.dp_replicate,
+        )
         args.distributed.dp_replicate = get_world_size() // args.distributed.dp_shard
 
+        logging.info(
+            "Changing dp_replicate from %s to %s, to account for tp_size=%s",
+            args.distributed.dp_replicate,
+            args.distributed.dp_replicate // args.distributed.tp_size,
+            args.distributed.tp_size,
+        )
         assert args.distributed.dp_replicate % args.distributed.tp_size == 0
         args.distributed.dp_replicate = (
             args.distributed.dp_replicate // args.distributed.tp_size
@@ -470,9 +488,20 @@ def train(args: TrainArgs):
             # For logging we undo that scaling
             loss = loss.detach() * args.grad_acc_steps
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=args.optim.clip, foreach=True
-            )
+            world_size = get_world_size()
+            if 1 < world_size <= 8:
+                # For some reason, there are errors in reduces due to
+                # not working for non-bf16 numbers. This function is a patched
+                # version that converts gradients to bf16 before computing norms.
+                # The error only happens in distributed training on one node,
+                # hence the guard
+                grad_norm = fixed_clip_grad_norm_(
+                    model.parameters(), max_norm=args.optim.clip, foreach=True
+                )
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=args.optim.clip, foreach=True
+                )
 
             grad_norm = (
                 grad_norm.full_tensor() if isinstance(grad_norm, DTensor) else grad_norm
