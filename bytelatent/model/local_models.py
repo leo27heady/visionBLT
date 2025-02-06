@@ -179,7 +179,7 @@ class LocalModelBase(nn.Module):
             )
 
         if self.patch_embedding_projection is not None:
-            patch_emb_std = self.dim_patch_emb  ** (-0.5)
+            patch_emb_std = self.dim_patch_emb ** (-0.5)
             nn.init.trunc_normal_(
                 self.patch_embedding_projection.weight,
                 mean=0.0,
