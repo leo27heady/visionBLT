@@ -4,10 +4,10 @@ import json
 import os
 import shutil
 import subprocess
-from pydantic import BaseModel
 from typing import Any, Dict
 
 from omegaconf import OmegaConf
+from pydantic import BaseModel
 
 
 class StoolArgs(BaseModel):
