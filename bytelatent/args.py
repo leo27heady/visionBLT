@@ -1,8 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+import json
 import logging
 import os
 from typing import Any
 
+import fsspec
 import numpy as np
 import yaml
 from omegaconf import OmegaConf
@@ -10,11 +12,9 @@ from pydantic import BaseModel, ConfigDict
 
 from bytelatent.checkpoint import CheckpointArgs
 from bytelatent.data.data_types import Batch
+from bytelatent.data.file_util import get_fs
 from bytelatent.data.iterators.abstract_iterator import StatefulIterator
-from bytelatent.data.iterators.arrow_iterator import (
-    ArrowFileIterator,
-    find_and_sanitize_chunks,
-)
+from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
 from bytelatent.data.iterators.looping_iterator import LoopingIterator
 from bytelatent.data.iterators.multiprocess_iterator import MultiprocessIterator
 from bytelatent.data.iterators.packing_iterator import PackingArgs, PackingIterator
@@ -53,6 +53,33 @@ def parse_args(args_cls):
     return pydantic_args
 
 
+TRAIN_DATA_FILE_PATTERN = "*.chunk.*.jsonl"
+
+
+def find_and_sanitize_chunks(
+    dataset_path: str,
+    world_size: int,
+    file_pattern: str,
+    s3_profile: str | None = None,
+):
+    fs = get_fs(dataset_path, s3_profile=s3_profile)
+    path_with_glob = os.path.join(dataset_path, file_pattern)
+    dataset_chunks = fs.glob(path_with_glob)
+    n_chunks = len(dataset_chunks)
+
+    if n_chunks > world_size:
+        n_discard = n_chunks - world_size
+        dataset_chunks = dataset_chunks[:world_size]
+    else:
+        assert (
+            world_size % n_chunks == 0
+        ), "World size should be a multiple of number of chunks"
+
+    assert n_chunks > 0, f"No valid chunks in {dataset_path}"
+
+    return dataset_chunks
+
+
 def distribute_data_to_rank(
     *,
     dataset_path: str,
@@ -62,9 +89,10 @@ def distribute_data_to_rank(
     rank: int,
     world_size: int,
     s3_profile: str | None = None,
+    file_pattern: str = TRAIN_DATA_FILE_PATTERN,
 ) -> ArrowFileIterator:
     dataset_chunks = find_and_sanitize_chunks(
-        dataset_path, world_size, s3_profile=s3_profile
+        dataset_path, world_size, file_pattern, s3_profile=s3_profile
     )
     n_workers_per_chunk = world_size // len(dataset_chunks)
     rank_to_arrow_iterator_params = []
