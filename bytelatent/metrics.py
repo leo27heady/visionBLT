@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Union
 
+import fsspec
 import torch
 import torch.nn as nn
 import wandb
@@ -54,14 +55,24 @@ class LoggingArgs(BaseModel):
 
 
 class MetricLogger:
-    def __init__(self, outdir: Path, args: Any | None = None):
+    def __init__(
+        self,
+        outdir: Path,
+        # args: TrainArgs
+        args: Any | None = None,
+        fs: fsspec.AbstractFileSystem | None = None,
+    ):
         self.outdir = outdir
         self.jsonl_writer = None
+        self.fs = fs
         self.args = args
 
     def open(self):
         if self.jsonl_writer is None:
-            self.jsonl_writer = open(self.outdir, "a")
+            if self.fs is None:
+                self.jsonl_writer = open(self.outdir, "a")
+            else:
+                self.jsonl_writer = self.fs.open(self.outdir, "a")
         if (
             self.args is not None
             and self.args.logging.wandb is not None
