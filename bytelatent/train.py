@@ -527,7 +527,7 @@ def train(args: TrainArgs):
             step_tok_losses.append(tok_loss / train_state.scale)
 
             world_size = get_world_size()
-            if 1 < world_size <= 8:
+            if 1 < world_size <= 8 and False:
                 # For some reason, there are errors in reduces due to
                 # not working for non-bf16 numbers. This function is a patched
                 # version that converts gradients to bf16 before computing norms.
