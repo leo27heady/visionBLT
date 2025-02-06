@@ -4,7 +4,6 @@
 import json
 import logging
 from collections import namedtuple
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Union
@@ -68,8 +67,8 @@ class MetricLogger:
             and get_is_master()
         ):
             run = wandb.init(
-                config=asdict(self.args),
-                **asdict(self.args.logging.wandb),
+                config=self.args.model_dump(),
+                **self.args.logging.wandb.model_dump(),
             )
 
     def log(self, metrics: dict[str, Any]):
