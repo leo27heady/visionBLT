@@ -86,6 +86,7 @@ class LocalModelBase(nn.Module):
                 theta=args.rope_theta,
                 head_dim=args.head_dim or args.dim // args.n_heads,
                 max_seqlen=args.max_seqlen,
+                rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
             )
             self.pos_embeddings = None
 

@@ -414,7 +414,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     patch_in_forward: bool = False
 
     # Architecture and dimensions
-    dim_token: int = 256
+    dim_token: int | None = None
     dim_global: int = 512
     dim_local_decoder: int = 512
     dim_local_encoder: int = 512
@@ -523,10 +523,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     use_fsdp: bool = True
     attn_to_keep: str = "all"
 
-    # RoPE parameters
-    rope_theta: float = 10000.0
-    rope_use_fp32_in_outer_product: bool = False
-
     # Parameter mixing
     pm_size: int = 0
 
@@ -619,6 +615,7 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
         sliding_window=args.local_attention_window_len,
         use_rope=args.use_rope,
         rope_theta=args.rope_theta,
+        rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
         init_base_std=args.init_base_std,
         init_std_factor=args.init_std_factor,
         n_kv_heads=args.n_kv_heads,
@@ -661,6 +658,7 @@ def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
         sliding_window=args.local_attention_window_len,
         use_rope=args.use_rope,
         rope_theta=args.rope_theta,
+        rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
         init_base_std=args.init_base_std,
         init_std_factor=args.init_std_factor,
         n_kv_heads=args.n_kv_heads,
