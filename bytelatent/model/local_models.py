@@ -34,7 +34,7 @@ class LocalModelArgs(BaseTransformerArgs):
     # Local encoder specific dimensions
     dropout: float
     vocab_size: int
-    patch_size: int
+    patch_size: float
     sliding_window: int | None
     use_rope: bool
     cross_attn_encoder: bool | None
@@ -61,6 +61,7 @@ class LocalModelBase(nn.Module):
         self.dropout = args.dropout
         self.vocab_size = args.vocab_size
         self.patch_size = args.patch_size
+        self.dim_patch_emb = args.dim_patch_emb
 
         self.attn_impl = args.attn_impl
         self.sliding_window = args.sliding_window
@@ -130,6 +131,7 @@ class LocalModelBase(nn.Module):
 
     def init_weights(self, init_std=None):
         self.rope.reset_parameters()
+        self.norm.reset_parameters()
 
         init_std = init_std or (self.dim ** (-0.5))
         nn.init.trunc_normal_(
@@ -156,7 +158,16 @@ class LocalModelBase(nn.Module):
                 InitStdFactor.DISABLED: 1.0,
             }[self.init_std_factor]
 
-            layer.init_weights(init_std, factor)
+            layer.init_weights(None, factor)
+
+        if hasattr(self, "output"):
+            nn.init.trunc_normal_(
+                self.output.weight,
+                mean=0.0,
+                std=init_std,
+                a=-3 * init_std,
+                b=3 * init_std,
+            )
 
         if self.token_embedding_projection is not None:
             nn.init.trunc_normal_(
@@ -168,21 +179,13 @@ class LocalModelBase(nn.Module):
             )
 
         if self.patch_embedding_projection is not None:
+            patch_emb_std = self.dim_patch_emb  ** (-0.5)
             nn.init.trunc_normal_(
                 self.patch_embedding_projection.weight,
                 mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
-            )
-
-        if hasattr(self, "output"):
-            nn.init.trunc_normal_(
-                self.output.weight,
-                mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
+                std=patch_emb_std,
+                a=-3 * patch_emb_std,
+                b=3 * patch_emb_std,
             )
 
         if self.cross_attn_layers is not None:
@@ -194,7 +197,7 @@ class LocalModelBase(nn.Module):
                     InitStdFactor.DISABLED: 1.0,
                 }[self.init_std_factor]
 
-                layer.init_weights(init_std, factor)
+                layer.init_weights(None, factor)
 
 
 class LocalEncoder(LocalModelBase):
