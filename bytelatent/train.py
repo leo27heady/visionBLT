@@ -3,6 +3,7 @@
 
 import gc
 import logging
+import math
 import os
 import sys
 from contextlib import ExitStack
@@ -11,6 +12,7 @@ from dataclasses import asdict, dataclass
 from timeit import default_timer as timer
 from typing import Any, TypeVar
 
+import numpy as np
 import torch
 import torch.distributed
 import torch.nn.functional
@@ -32,7 +34,9 @@ from bytelatent.data.iterators.packing_iterator import PackingIteratorState
 from bytelatent.distributed import (
     check_model_value_range,
     clean_env,
+    dist_mean,
     dist_mean_dict,
+    dist_sum,
     get_device_mesh,
     get_is_master,
     get_world_size,
@@ -392,6 +396,9 @@ def train(args: TrainArgs):
         time_last_log = timer()
         gc.collect()
         saved = False
+        step_losses: list[float] = []
+        step_tok_losses: list[float] = []
+        n_bytes: int = 0
         while train_state.step < args.steps and (
             args.max_steps is None or train_state.step < args.max_steps
         ):
@@ -412,6 +419,21 @@ def train(args: TrainArgs):
             else:
                 batch_patch_lengths = torch.from_numpy(batch.patch_lengths).cuda()
             mask = None if batch.mask is None else torch.from_numpy(batch.mask).cuda()
+
+            if args.data.tokenizer_args.name in ["bytes", "blt"]:
+                n_bytes += batch_y.numel() if mask is None else mask.sum()
+            elif args.data.tokenizer_args.name in ["sp", "tiktoken"]:
+                for example in batch.y:
+                    target_tokens = tokenizer.decode(example.tolist(), cut_at_eos=False)
+                    n_bytes += (
+                        len(bytes(target_tokens, encoding="utf-8", errors="ignore"))
+                        + sum(example == tokenizer.eos_id)
+                        + sum(example == tokenizer.bos_id)
+                    )
+            else:
+                raise ValueError(
+                    f"Unexpected tokenizer to count n_bytes for: {args.data.tokenizer_args.name}"
+                )
 
             if (
                 not args.train_entropy_model
@@ -487,7 +509,7 @@ def train(args: TrainArgs):
                     batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids
                 )
 
-            loss, _ = compute_loss(pred, batch_y, mask, train_state.scale)
+            loss, tok_loss = compute_loss(pred, batch_y, mask, train_state.scale)
 
             # We scale loss with grad_acc_steps so the gradient is the same
             # regardless of grad_acc_steps
@@ -497,6 +519,10 @@ def train(args: TrainArgs):
             loss.backward()
             # For logging we undo that scaling
             loss = loss.detach() * args.grad_acc_steps
+
+            # Undo loss scaling so downstream down't need to worry about it
+            step_losses.append((loss / train_state.scale).item())
+            step_tok_losses.append(tok_loss / train_state.scale)
 
             world_size = get_world_size()
             if 1 < world_size <= 8:
@@ -568,49 +594,104 @@ def train(args: TrainArgs):
                     * wps
                 )
 
-                metrics = flatten_dict(
-                    {
-                        "global_step": train_state.step,
-                        "acc_step": train_state.acc_step,
-                        "speed": {
-                            "wps": wps,
-                            "FLOPS": FLOPS,
-                            "curr_iter_time": curr_iter_time,
-                            "data_load_time": data_load_time,
-                        },
-                        "optim": {
-                            "grad_norm": grad_norm,
-                            "lr": curr_lr,
-                            "total_tokens": total_tokens,
-                        },
-                        "memory": gpu_mem_stats._asdict(),
-                    },
-                    sep="/",
+                # Below, semantics are:
+                # per_gpu: Metrics on a given rank
+                # across_gpus: Metrics averaged/summed across all ranks
+                # step: Metric at a step
+                # interval: Metric averaged/summed across all steps since the last log interval.
+                #     Typically, this is 10
+                step_loss_per_gpu = loss.item()
+                step_loss_across_gpus = dist_mean(step_loss_per_gpu).item()
+                interval_loss_per_gpu = np.mean(step_losses).item()
+                interval_loss_across_gpus = dist_mean(interval_loss_per_gpu).item()
+
+                stacked_tok_loss = torch.cat(step_tok_losses, dim=0)
+                interval_total_tok_loss_per_gpu = stacked_tok_loss.sum().item()
+                interval_total_tok_loss_across_gpus = dist_sum(
+                    interval_total_tok_loss_per_gpu, reduce_dtype=torch.bfloat16
+                ).item()
+                interval_total_n_bytes_per_gpu = n_bytes
+                interval_total_n_bytes_across_gpus = dist_sum(
+                    n_bytes, reduce_dtype=torch.bfloat16
+                ).item()
+
+                interval_bpb_per_gpu = (
+                    interval_total_tok_loss_per_gpu
+                    / math.log(2)
+                    / interval_total_n_bytes_per_gpu
+                )
+                interval_bpb_across_gpus = (
+                    interval_total_tok_loss_across_gpus
+                    / math.log(2)
+                    / interval_total_n_bytes_across_gpus
                 )
 
-                to_sync = {}
-                to_sync["loss/out"] = loss.item()
-                metrics.update(dist_mean_dict(to_sync))
+                metric_dict = {
+                    "global_step": train_state.step,
+                    "acc_step": train_state.acc_step,
+                    "speed": {
+                        "wps": wps,
+                        "FLOPS": FLOPS,
+                        "curr_iter_time": curr_iter_time,
+                        "data_load_time": data_load_time,
+                    },
+                    "optim": {
+                        "grad_norm": grad_norm,
+                        "lr": curr_lr,
+                        "total_tokens": total_tokens,
+                    },
+                    "memory": gpu_mem_stats._asdict(),
+                    "loss": {
+                        "step_per_gpu": step_loss_per_gpu,
+                        "step_across_gpu": step_loss_across_gpus,
+                        "interval_per_gpu": interval_loss_per_gpu,
+                        "interval_across_gpu": interval_loss_across_gpus,
+                    },
+                    "bpb": {
+                        "interval_per_gpu": interval_bpb_per_gpu,
+                        "interval_across_gpus": interval_bpb_across_gpus,
+                    },
+                    "n_bytes": {
+                        "interval_per_gpu": interval_total_n_bytes_per_gpu,
+                        "interval_across_gpus": interval_total_n_bytes_across_gpus,
+                    },
+                }
+
+                metrics = flatten_dict(
+                    metric_dict,
+                    sep="/",
+                )
 
                 if get_is_master():
                     metric_logger.log(metrics)
 
-                gpu_memory_monitor.reset_peak_stats()
-                nwords_since_last_log = 0
-                time_last_log = timer()
+                # Below semantics are:
+                # step=Metrics at a step
+                # interval=Metrics averaged across the logging interval
+                # local=On one rank
+                # global=Across all ranks
                 logger.info(
                     f"step: {train_state.step}"
                     f"  acc: {train_state.acc_step}"
-                    f"  loss: {round(loss.item(),4):>7}"
+                    f"  loss: [step_local={round(step_loss_per_gpu, 4):>7} interval_local={round(interval_loss_per_gpu, 4):>7} step_global={round(step_loss_across_gpus, 4):>7} interval_global={round(interval_loss_across_gpus, 4):>7}]"
+                    f"  bpb: [interval_local={interval_bpb_per_gpu:3f} interval_global={interval_bpb_across_gpus:3f}]"
                     f"  grad: {grad_norm:.2e}"
                     f"  flops: {FLOPS:.2e}"
                     f"  wps: {wps:.2e}"
                     f"  iter: {curr_iter_time:>7}"
                     f"  data: {data_load_time:>5}"
                     f"  lr: {curr_lr:.2e}"
+                    f"  n_bytes: [interval_local={int(interval_total_n_bytes_per_gpu)} interval_global={int(interval_total_n_bytes_across_gpus)}]"
                     f"  mem: {gpu_mem_stats.max_active_pct:.0f}%"
                     f"  pow: {gpu_mem_stats.power_draw/1000} W"
                 )
+
+                n_bytes = 0
+                step_losses = []
+                step_tok_losses = []
+                gpu_memory_monitor.reset_peak_stats()
+                nwords_since_last_log = 0
+                time_last_log = timer()
 
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
