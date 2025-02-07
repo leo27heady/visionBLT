@@ -445,7 +445,7 @@ class Attention(nn.Module):
         return output
 
     def reset_parameters(self, init_std=None, factor=1.0):
-        init_std = init_std or (self.dim ** (-0.5))
+        init_std = init_std or (self.dim ** (-0.5)) / factor
 
         for w in [self.wq, self.wk, self.wv]:
             nn.init.trunc_normal_(
@@ -459,7 +459,7 @@ class Attention(nn.Module):
         nn.init.trunc_normal_(
             self.wo.weight,
             mean=0.0,
-            std=init_std / factor,
+            std=init_std,
             a=-3 * init_std,
             b=3 * init_std,
         )
@@ -509,24 +509,29 @@ class FeedForward(nn.Module):
         return output
 
     def reset_parameters(self, init_std=None, factor=1.0):
-        in_init_std = init_std or (self.dim ** (-0.5))
-        out_init_std = init_std or (self.hidden_dim ** (-0.5))
-        in_init_std = in_init_std
-        out_init_std = out_init_std / factor
-        for w in [self.w1, self.w3]:
-            nn.init.trunc_normal_(
-                w.weight,
-                mean=0.0,
-                std=in_init_std,
-                a=-3 * in_init_std,
-                b=3 * in_init_std,
-            )
+        in_init_std = init_std or (self.dim ** (-0.5)) / factor
+        out_init_std = init_std or (self.hidden_dim ** (-0.5)) / factor
+
+        nn.init.trunc_normal_(
+            self.w1.weight,
+            mean=0.0,
+            std=in_init_std,
+            a=-3 * in_init_std,
+            b=3 * in_init_std,
+        )
         nn.init.trunc_normal_(
             self.w2.weight,
             mean=0.0,
             std=out_init_std,
             a=-3 * out_init_std,
             b=3 * out_init_std,
+        )
+        nn.init.trunc_normal_(
+            self.w3.weight,
+            mean=0.0,
+            std=in_init_std,
+            a=-3 * in_init_std,
+            b=3 * in_init_std,
         )
 
 

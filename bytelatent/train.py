@@ -699,6 +699,12 @@ def train(args: TrainArgs):
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
             ) or every_n_steps(train_state, args.checkpoint.eval.every, acc_step=0):
+                # Re-init dataloader and iterator is necessary since get_state()
+                # on mp iterator shuts down MP to correctly persist state and it needs
+                # to be restarted.
+                train_state.data_loader_state = data_loader.get_state()
+                data_loader = train_state.data_loader_state.build()
+                batch_iterator = data_loader.create_iter()
                 saved = checkpoint.save(
                     model,
                     optimizer,
@@ -740,6 +746,12 @@ def train(args: TrainArgs):
 
             if preemption_flag["flag"]:
                 if not saved:
+                    # Re-init dataloader and iterator is necessary since get_state()
+                    # on mp iterator shuts down MP to correctly persist state and it needs
+                    # to be restarted.
+                    train_state.data_loader_state = data_loader.get_state()
+                    data_loader = train_state.data_loader_state.build()
+                    batch_iterator = data_loader.create_iter()
                     checkpoint.save(
                         model,
                         optimizer,
@@ -751,6 +763,12 @@ def train(args: TrainArgs):
                 sys.exit(0)
 
     if not saved:
+        # Re-init dataloader and iterator is necessary since get_state()
+        # on mp iterator shuts down MP to correctly persist state and it needs
+        # to be restarted.
+        train_state.data_loader_state = data_loader.get_state()
+        data_loader = train_state.data_loader_state.build()
+        batch_iterator = data_loader.create_iter()
         checkpoint.save(
             model,
             optimizer,

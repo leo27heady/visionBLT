@@ -473,13 +473,21 @@ def parallelize_model(
         raise ValueError(f"Invalid fsdp_type: {distributed_args.fsdp_type}")
 
     if distributed_args.selective_activation_checkpointing:
-        model = checkpoint_wrapper(
-            model,
-            context_fn=partial(
-                create_selective_checkpoint_contexts,
-                get_default_policy(no_recompute_ops),
-            ),
-        )
+        # only works for blt models
+        # assuming that entropy models will not use checkpointing
+        for module in [
+            model.global_transformer,
+            model.local_encoder,
+            model.local_decoder,
+        ]:
+            for i in range(len(module.layers)):
+                module.layers[i] = checkpoint_wrapper(
+                    module.layers[i],
+                    context_fn=partial(
+                        create_selective_checkpoint_contexts,
+                        get_default_policy(no_recompute_ops),
+                    ),
+                )
 
     if distributed_args.compile:
         torch._dynamo.config.cache_size_limit = (
