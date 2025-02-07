@@ -167,3 +167,4 @@ figures/
 .DS_Store
 internal/
 jobs_parallel-copy/
+wandb/
