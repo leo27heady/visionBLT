@@ -1,10 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-import json
 import logging
 import os
 from typing import Any
 
-import fsspec
 import numpy as np
 import yaml
 from omegaconf import OmegaConf
