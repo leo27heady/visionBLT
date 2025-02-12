@@ -28,6 +28,7 @@ def test_basic_arrow_file():
         row_num=0,
         arrow_batch_size=100,
         s3_profile=None,
+        file_format="arrow",
     )
     arrow_file = initial_state.build()
     start_state = arrow_file.get_state()
@@ -57,6 +58,7 @@ def test_basic_arrow_file():
         row_num=251,
         arrow_batch_size=100,
         s3_profile=None,
+        file_format="arrow",
     )
     arrow_file = resumed_state.build()
     for example in arrow_file.create_iter():
@@ -77,6 +79,7 @@ def test_basic_arrow_file():
         row_num=0,
         arrow_batch_size=100,
         s3_profile=None,
+        file_format="arrow",
     )
     arrow_file = rank_state.build()
     expected_ids = []
