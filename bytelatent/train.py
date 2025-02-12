@@ -17,7 +17,6 @@ import torch
 import torch.distributed
 import torch.nn.functional
 import torch.nn.functional as F
-import wandb
 import xformers.profiler
 from torch.distributed._tensor import DTensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -62,6 +61,8 @@ from bytelatent.transformer import (
     get_num_flop_per_token,
     tp_parallelize,
 )
+
+import wandb
 
 logger = logging.getLogger()
 
