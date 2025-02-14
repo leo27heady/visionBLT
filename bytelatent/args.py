@@ -248,8 +248,8 @@ class ValidationArgs(BaseModel):
 
 class EvalArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    dump_dir: str
-    ckpt_dir: str
+    dump_dir: str | None = None
+    ckpt_dir: str | None = None
     metric_log_dir: str | None = None
     generator: PackedCausalTransformerGeneratorArgs = (
         PackedCausalTransformerGeneratorArgs()
