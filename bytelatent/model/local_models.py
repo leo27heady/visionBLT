@@ -26,7 +26,7 @@ try:
 
     RMSNorm = FusedRMSNorm
 except (ImportError, ModuleNotFoundError):
-    print('Apex not found. Using nn.RMSNorm')
+    print("Apex not found. Using nn.RMSNorm")
     RMSNorm = nn.RMSNorm
 
 logger = logging.getLogger()
