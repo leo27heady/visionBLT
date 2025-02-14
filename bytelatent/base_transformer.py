@@ -22,6 +22,7 @@ try:
 
     RMSNorm = FusedRMSNorm
 except (ImportError, ModuleNotFoundError):
+    print('Apex not found. Using nn.RMSNorm')
     RMSNorm = nn.RMSNorm
 
 if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
