@@ -28,6 +28,7 @@ try:
 
     RMSNorm = FusedRMSNorm
 except (ImportError, ModuleNotFoundError):
+    print("Apex not found. Using nn.RMSNorm")
     RMSNorm = nn.RMSNorm
 
 
