@@ -88,14 +88,14 @@ bash dev/lint.sh
 
 The BLT is partially based on Meta Lingua, so consider citing it in addition to our BLT paper if you re-use our work.
 
-BLT Paper Citation (will be updated to arXiv soon)
+BLT Paper Citation
 
 ```
-@article{meta_blt,
-  author = {Artidoro Pagnoni, Ram Pasunuru, Pedro Rodriguez, John Nguyen, Benjamin Muller, Margaret Li, Chunting Zhou, Lili Yu, Jason Weston, Luke Zettlemoyer, Gargi Ghosh, Mike Lewis, Ari Holtzman†, Srinivasan Iyer},
-  title = {Byte Latent Transformer: Patches Scale Better Than Tokens},
-  url = {https://github.com/facebookresearch/blt},
-  year = {2024}
+@article{pagnoni2024byte,
+  title={Byte latent transformer: Patches scale better than tokens},
+  author={Pagnoni, Artidoro and Pasunuru, Ram and Rodriguez, Pedro and Nguyen, John and Muller, Benjamin and Li, Margaret and Zhou, Chunting and Yu, Lili and Weston, Jason and Zettlemoyer, Luke and others},
+  journal={arXiv preprint arXiv:2412.09871},
+  year={2024}
 }
 ```
 
