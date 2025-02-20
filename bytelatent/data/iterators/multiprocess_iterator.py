@@ -6,16 +6,20 @@ from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Full
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 
 from bytelatent.data.data_types import Batch
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    IteratorState,
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.data.iterators.packing_iterator import PackingIteratorState
 
 logger = logging.getLogger()
 
 
-class MultiprocessIteratorState(BaseModel, IteratorState):
+class MultiprocessIteratorState(PydanticIteratorState):
     model_config = ConfigDict(extra="forbid")
     base_iterator_state: PackingIteratorState
     n_batches_to_prefetch: int

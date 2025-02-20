@@ -5,7 +5,10 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from bytelatent.data.data_types import Batch, BltSequence
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.data.iterators.sampling_iterator import SamplingIteratorState
 
 
@@ -20,7 +23,7 @@ class PackingArgs(BaseModel):
     tokenizer_name: str
 
 
-class PackingIteratorState(BaseModel, IteratorState):
+class PackingIteratorState(PydanticIteratorState):
     model_config = ConfigDict(extra="forbid")
     sequence_iterator_state: SamplingIteratorState
     packing_args: PackingArgs
