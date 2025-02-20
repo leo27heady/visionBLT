@@ -72,6 +72,7 @@ def distribute_data_to_rank(
     arrow_batch_size: int,
     rank: int,
     world_size: int,
+    file_format: str,
     s3_profile: str | None = None,
     file_pattern: str = TRAIN_DATA_FILE_PATTERN,
 ) -> ArrowFileIterator:
@@ -85,6 +86,7 @@ def distribute_data_to_rank(
             rank_to_arrow_iterator_params.append(
                 ArrowFileIterator(
                     file_path=chunk_path,
+                    file_format=file_format,
                     worker_id=worker_id,
                     num_workers=n_workers_per_chunk,
                     preprocess_dir=preprocess_dir,
@@ -130,6 +132,7 @@ class DataloaderArgs(BaseModel):
     entropy_model_name: str | None = "transformer_100m"
     arrow_batch_size: int = 100
     buffer_size: int = 64
+    file_format: str = "arrow"
 
     pad_to_max_length: bool = True
     max_encoder_seq_length: int = 12288
@@ -151,6 +154,7 @@ class DataloaderArgs(BaseModel):
         for dataset_path in self.sources:
             shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
             arrow_iterator = distribute_data_to_rank(
+                file_format=self.file_format,
                 dataset_path=os.path.join(self.root_dir, dataset_path),
                 preprocess_dir=self.preprocess_dir,
                 entropy_model_name=self.entropy_model_name,
@@ -238,7 +242,7 @@ class LMHarnessArgs(BaseModel):
 
 class ValidationArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    max_steps: int | None = (
+    max_n_docs: int | None = (
         None  # If None the whole validation file is used -> /!\ This number of steps is gpu dependent (100 max steps on 8 gpus = 800 steps on 1 gpu)
     )
     use_val_from_train_src: bool = True  # Use the validation set from training sources
@@ -248,8 +252,8 @@ class ValidationArgs(BaseModel):
 
 class EvalArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    dump_dir: str
-    ckpt_dir: str
+    dump_dir: str | None = None
+    ckpt_dir: str | None = None
     metric_log_dir: str | None = None
     generator: PackedCausalTransformerGeneratorArgs = (
         PackedCausalTransformerGeneratorArgs()

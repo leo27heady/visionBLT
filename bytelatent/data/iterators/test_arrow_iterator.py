@@ -6,7 +6,10 @@ import pyarrow as pa
 import pyarrow.dataset  # pyright: ignore
 
 from bytelatent.constants import BLT_DATA
-from bytelatent.data.iterators.arrow_iterator import ArrowFileIteratorState
+from bytelatent.data.iterators.arrow_iterator import (
+    ArrowFileIterator,
+    ArrowFileIteratorState,
+)
 
 ENTROPY_MODEL = "transformer_100m"
 ARROW_TEST_DATA_1 = str(BLT_DATA / "stackexchange.chunk.00.jsonl.shard_00.arrow")
@@ -93,3 +96,19 @@ def test_basic_arrow_file():
         i += 1
         if i >= len(expected_ids):
             break
+
+
+def test_read_jsonl_from_arrow():
+    arrow_iterator = ArrowFileIterator(
+        file_path="fixtures/test_docs.jsonl",
+        num_workers=1,
+        worker_id=0,
+        preprocess_dir=None,
+        entropy_model_name=None,
+        file_format="json",
+        arrow_batch_size=100,
+    )
+    iterator = arrow_iterator.create_iter()
+    for i, example in enumerate(iterator):
+        assert example.sample_id == str(i)
+        assert example.text == f"test_{i}"
