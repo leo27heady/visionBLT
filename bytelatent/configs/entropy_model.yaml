@@ -55,7 +55,7 @@ data:
     # so pick the most efficient, so static
     patching_mode: byte
   tokenizer_args:
-    name: bytes
+    name: blt
 
 profiling:
   run: false

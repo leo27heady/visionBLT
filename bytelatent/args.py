@@ -14,14 +14,18 @@ from bytelatent.data.iterators.abstract_iterator import StatefulIterator
 from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
 from bytelatent.data.iterators.looping_iterator import LoopingIterator
 from bytelatent.data.iterators.multiprocess_iterator import MultiprocessIterator
-from bytelatent.data.iterators.packing_iterator import PackingArgs, PackingIterator
+from bytelatent.data.iterators.packing_iterator import (
+    PackingArgs,
+    PackingIterator,
+    PackingMode,
+)
 from bytelatent.data.iterators.preprocess_iterator import PreprocessIterator
 from bytelatent.data.iterators.sampling_iterator import SamplingIterator
 from bytelatent.data.iterators.sequence_iterator import (
     SequenceIterator,
     SequencePackingArgs,
 )
-from bytelatent.data.patcher import PatcherArgs
+from bytelatent.data.patcher import PatcherArgs, PatchingModeEnum
 from bytelatent.distributed import DistributedArgs, EnvironmentArgs
 from bytelatent.metrics import LoggingArgs
 from bytelatent.model.blt import ByteLatentTransformerArgs
@@ -202,7 +206,11 @@ class DataloaderArgs(BaseModel):
             max_length=self.max_encoder_seq_length,
             pad_to_max_length=self.pad_to_max_length,
             enable_byte_ngrams=self.enable_byte_ngrams,
-            tokenizer_name=self.tokenizer_args.name,
+            packing_mode=(
+                PackingMode.BYTES
+                if self.patcher_args.patching_mode == PatchingModeEnum.byte
+                else PackingMode.PATCHING
+            ),
         )
         packing_iterator = PackingIterator(sampling_iterator, packing_args=packing_args)
         if self.load_async:
