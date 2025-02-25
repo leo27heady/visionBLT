@@ -617,12 +617,8 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
             h = layer(h, freq_cis, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
         return h
 
-    def reset_parameters(self):
-        # Either use fixed base std or sqrt model dim
-        self.rope_embeddings.reset_parameters()
-
     def init_weights(self):
-        self.reset_parameters()
+        self.rope_embeddings.reset_parameters()
         for depth, layer in enumerate(self.layers):
             factor = {
                 InitStdFactor.CURRENT_DEPTH: (2 * (depth + 1)) ** 0.5,

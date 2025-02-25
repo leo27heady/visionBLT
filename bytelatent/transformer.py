@@ -116,10 +116,11 @@ class LMTransformer(BaseTransformer):
             return logits
 
     def reset_parameters(self, init_std=None):
-        # Either use fixed base std or sqrt model dim
-        super().reset_parameters()
-        init_std = init_std or (self.dim ** (-0.5))
         self.norm.reset_parameters()
+
+    def init_weights(self):
+        self.reset_parameters()
+        init_std = self.dim ** (-0.5)
         nn.init.trunc_normal_(
             self.tok_embeddings.weight,
             mean=0.0,
@@ -127,6 +128,8 @@ class LMTransformer(BaseTransformer):
             a=-3 * init_std,
             b=3 * init_std,
         )
+        super().init_weights()
+
         if not self.weight_tying:
             nn.init.trunc_normal_(
                 self.output.weight,
