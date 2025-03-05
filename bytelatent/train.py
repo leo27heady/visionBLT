@@ -31,6 +31,7 @@ from bytelatent.data.iterators.abstract_iterator import get_state_and_refresh
 from bytelatent.data.iterators.multiprocess_iterator import (
     MultiprocessIterator,
     MultiprocessIteratorState,
+    PersistType,
 )
 from bytelatent.data.iterators.packing_iterator import PackingIteratorState
 from bytelatent.distributed import (
@@ -712,9 +713,15 @@ def train(args: TrainArgs):
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
             ) or every_n_steps(train_state, args.checkpoint.eval.every, acc_step=0):
-                train_state.data_loader_state, data_loader, batch_iterator = (
-                    get_state_and_refresh(data_loader)
-                )
+                if (
+                    args.data.load_async
+                    and args.data.async_persist_type == PersistType.EXACT
+                ):
+                    train_state.data_loader_state, data_loader, batch_iterator = (
+                        get_state_and_refresh(data_loader)
+                    )
+                else:
+                    train_state.data_loader_state = data_loader.get_state()
                 saved = checkpoint.save(
                     model,
                     optimizer,
@@ -756,9 +763,16 @@ def train(args: TrainArgs):
 
             if preemption_flag["flag"]:
                 if not saved:
-                    train_state.data_loader_state, data_loader, batch_iterator = (
-                        get_state_and_refresh(data_loader)
-                    )
+                    if (
+                        args.data.load_async
+                        and args.data.async_persist_type == PersistType.EXACT
+                    ):
+                        train_state.data_loader_state, data_loader, batch_iterator = (
+                            get_state_and_refresh(data_loader)
+                        )
+                    else:
+                        train_state.data_loader_state = data_loader.get_state()
+
                     checkpoint.save(
                         model,
                         optimizer,
@@ -769,21 +783,27 @@ def train(args: TrainArgs):
                 requeue_slurm_job()
                 sys.exit(0)
 
-    if not saved:
-        train_state.data_loader_state, data_loader, batch_iterator = (
-            get_state_and_refresh(data_loader)
-        )
-        checkpoint.save(
-            model,
-            optimizer,
-            train_state,
-            args,
-            device_mesh=world_mesh,
-        )
-    if isinstance(data_loader, MultiprocessIterator):
-        logger.info("Closing MP iterator before exiting")
-        data_loader.shutdown()
-    gc.collect()
+        if not saved:
+            if (
+                args.data.load_async
+                and args.data.async_persist_type == PersistType.EXACT
+            ):
+                train_state.data_loader_state, data_loader, batch_iterator = (
+                    get_state_and_refresh(data_loader)
+                )
+            else:
+                train_state.data_loader_state = data_loader.get_state()
+            checkpoint.save(
+                model,
+                optimizer,
+                train_state,
+                args,
+                device_mesh=world_mesh,
+            )
+        if isinstance(data_loader, MultiprocessIterator):
+            logger.info("Closing MP iterator before exiting")
+            data_loader.shutdown()
+        gc.collect()
 
 
 def main():
