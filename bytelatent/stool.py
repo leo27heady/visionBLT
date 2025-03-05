@@ -74,7 +74,7 @@ def copy_dir(input_dir: str, output_dir: str) -> None:
     assert os.path.isdir(input_dir), f"{input_dir} is not a directory"
     assert os.path.isdir(output_dir), f"{output_dir} is not a directory"
     rsync_cmd = (
-        f"rsync -arm --copy-links "
+        f"rsync -rmlt --copy-links "
         f"--include '**/' "
         f"--include '*.py' "
         f"--exclude='*' "
