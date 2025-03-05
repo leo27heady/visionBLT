@@ -10,6 +10,9 @@ from bytelatent.data.iterators.abstract_iterator import (
     PydanticIteratorState,
     StatefulIterator,
 )
+from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
+from bytelatent.data.iterators.limit_iterator import LimitIterator
+from bytelatent.data.iterators.looping_iterator import LoopingIterator
 from bytelatent.data.iterators.preprocess_iterator import (
     PreprocessIterator,
     PreprocessIteratorState,
@@ -38,6 +41,21 @@ class SequenceIteratorState(PydanticIteratorState):
             sequence_packing_args=self.sequence_packing_args,
             rng_state=self.rng_state,
         )
+
+
+def get_datafile(
+    iterator: PreprocessIterator | ArrowFileIterator | LoopingIterator | LimitIterator,
+):
+    if isinstance(iterator, ArrowFileIterator):
+        return f"file={iterator.file_path} n_shards={len(iterator.dataset_files) if iterator.dataset_files is not None else None}"
+    elif isinstance(iterator, PreprocessIterator):
+        return get_datafile(iterator.arrow_iterator)
+    elif isinstance(iterator, LoopingIterator):
+        return get_datafile(iterator.file_iterator)
+    elif isinstance(iterator, LimitIterator):
+        return get_datafile(iterator.base_iterator)
+    else:
+        raise NotImplementedError()
 
 
 class SequenceIterator(StatefulIterator):
@@ -74,6 +92,10 @@ class SequenceIterator(StatefulIterator):
         tokens: list[int] = []
         mask: list[bool] = []
         first = True
+        logger.info(
+            "Starting first buffer for: %s",
+            get_datafile(self.preprocess_iterator),
+        )
         for example in example_iter:
             assert example.tokens is not None
             assert example.mask is not None
@@ -97,7 +119,10 @@ class SequenceIterator(StatefulIterator):
             while len(patch_lengths) >= n_buffer_patches:
                 if first:
                     first = False
-                    logger.info("First buffer complete")
+                    logger.info(
+                        "First buffer complete for: %s",
+                        get_datafile(self.preprocess_iterator),
+                    )
 
                 x_patches = np.array(patch_lengths[:n_buffer_patches]).reshape(
                     self.buffer_size, self.output_seq_len

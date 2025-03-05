@@ -138,7 +138,8 @@ class DataloaderArgs(BaseModel):
     preprocess_dir: str | None = None
     dataset_files: list[str] | None = None
     entropy_model_name: str | None = "transformer_100m"
-    arrow_batch_size: int = 100
+    # Be very careful with increasing, increases memory usage by that factor per rank, per data source
+    arrow_batch_size: int = 20
     buffer_size: int = 64
     file_format: str = "arrow"
 
