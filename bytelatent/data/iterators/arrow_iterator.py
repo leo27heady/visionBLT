@@ -226,7 +226,13 @@ class ArrowFileIterator(StatefulIterator):
                 if (self.row_num - 1) % self.num_workers == self.worker_id:
                     yield out
 
-        self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
+        self.batch_iterator = self.dataset.to_batches(
+            batch_size=self.arrow_batch_size,
+            # We have large files in GBs, no need to readahead
+            fragment_readahead=1,
+            # Don't readahead in case batches are huge (e.g., books)
+            batch_readahead=1,
+        )
         for batch in self.batch_iterator:
             batch_columns = batch.to_pydict()
             if self.file_format == "arrow":

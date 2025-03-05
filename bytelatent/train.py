@@ -13,6 +13,7 @@ from timeit import default_timer as timer
 from typing import Any, TypeVar
 
 import numpy as np
+import pyarrow
 import torch
 import torch.distributed
 import torch.nn.functional
@@ -266,6 +267,8 @@ def compute_loss(p, y, mask, scale):
 
 def train(args: TrainArgs):
     with ExitStack() as context_stack:
+        pyarrow.set_io_thread_count(4)
+        pyarrow.set_cpu_count(4)
         tokenizer = args.data.tokenizer_args.build()
         validate_train_args(
             args,
