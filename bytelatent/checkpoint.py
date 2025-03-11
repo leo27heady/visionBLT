@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import typer
 
 import fsspec
 import s3fs
@@ -323,3 +324,16 @@ class CheckpointManager:
         dist.barrier()
 
         return cls(args)
+
+def main(
+    command: str,
+    model_checkpoint_dir: str,
+):
+    if command == "consolidate":
+        print(f"Consolidating {model_checkpoint_dir}. Output will be in the {CONSOLIDATE_FOLDER} folder.")
+        consolidate_checkpoints(fsspec.filesystem("file"), model_checkpoint_dir)
+    else:
+        raise ValueError("Invalid command")
+
+if __name__ == '__main__':
+    typer.run(main)
