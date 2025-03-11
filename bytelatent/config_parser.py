@@ -58,6 +58,7 @@ def parse_args_with_default(
     if default_cfg is not None:
         ordered_cfgs.insert(0, default_cfg)
     cfg = OmegaConf.merge(*ordered_cfgs)
+    # TODO: Change sources to list[tuple,str, float]] so that this special case isn't needed
     for c in reversed(ordered_cfgs):
         if "data" in c and "sources" in c["data"]:
             cfg["data"]["sources"] = c["data"]["sources"]
