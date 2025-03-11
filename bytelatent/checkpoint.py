@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-import typer
 
 import fsspec
 import s3fs
@@ -13,6 +12,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 import torch.optim.optimizer
+import typer
 from pydantic import BaseModel, ConfigDict
 from torch.distributed._tensor import DeviceMesh
 from torch.distributed.checkpoint.format_utils import dcp_to_torch_save
