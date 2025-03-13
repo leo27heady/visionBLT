@@ -263,6 +263,7 @@ class ValidationArgs(BaseModel):
     use_val_from_train_src: bool = True  # Use the validation set from training sources
     root_dir: str = ""
     sources: list[str] = []  # Other sources to eval on
+    batch_size: int = 8
 
 
 class EvalArgs(BaseModel):
