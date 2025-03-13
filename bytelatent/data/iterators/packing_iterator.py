@@ -221,6 +221,7 @@ class PackingIterator(StatefulIterator[Batch, PackingIteratorState]):
         enable_byte_ngrams = self.packing_args.enable_byte_ngrams
         max_length = self.packing_args.max_length
         assert max_length is not None
+        final_leftover_batch = False
         while True:
             tokens: list[list[int]] = []
             masks: list[list[bool]] = []
@@ -252,6 +253,9 @@ class PackingIterator(StatefulIterator[Batch, PackingIteratorState]):
                 break
 
             x_patch_lengths = np.array(patch_lengths)
+            assert (
+                x_patch_lengths.shape[1] == seq_len
+            ), f"{x_patch_lengths.shape[1]} vs {seq_len}"
             # pad batch to same length
             tok_seq_len = max([len(toks) for toks in tokens]) - 1
             x = np.full((batch_size, tok_seq_len), fill_value=pad_id)
@@ -263,7 +267,30 @@ class PackingIterator(StatefulIterator[Batch, PackingIteratorState]):
                 # Adjust patch lengths to match x
                 x_patch_lengths[i, -1] += tok_seq_len - (len(tok_seq) - 1)
 
-            assert x_patch_lengths.shape == (batch_size, seq_len)
+            if x_patch_lengths.shape[0] < batch_size:
+                if final_leftover_batch:
+                    raise ValueError(
+                        "There should only be one partial batch, but found multiple"
+                    )
+                final_leftover_batch = True
+                assert len(masks) == len(x_patch_lengths)
+                n_missing = batch_size - x_patch_lengths.shape[0]
+                # Repeat the last patch length to validly pad it out, but
+                # update the mask to ignore the row
+                x_patch_lengths = np.vstack(
+                    [
+                        x_patch_lengths,
+                        np.repeat(x_patch_lengths[-1:, :], n_missing, axis=0),
+                    ]
+                )
+                for _ in range(n_missing):
+                    masks.append([0] * tok_seq_len)
+                assert len(masks) == batch_size
+
+            assert x_patch_lengths.shape == (
+                batch_size,
+                seq_len,
+            ), f"{x_patch_lengths.shape} vs {(batch_size, seq_len)}"
 
             if enable_byte_ngrams:
                 raise NotImplementedError()
