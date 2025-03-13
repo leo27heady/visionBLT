@@ -10,8 +10,8 @@ from bytelatent.logger import init_logger
 
 def main(state_file: str):
     init_logger()
-    pyarrow.set_io_thread_count(4)
-    pyarrow.set_cpu_count(4)
+    pyarrow.set_io_thread_count(2)
+    pyarrow.set_cpu_count(2)
     with open(state_file) as f:
         train_state = json.load(f)
         dl_state = MultiprocessIteratorState(**train_state["data_loader_state"])
@@ -22,8 +22,13 @@ def main(state_file: str):
         batch_iter = packing_iterator.create_iter()
         batch = None
         print("looping")
-        for i in track(range(1_000)):
+        i = 0
+        for i in track(range(3_000)):
             batch = next(batch_iter)
+            if i % 100 == 0:
+                print(pyarrow.default_memory_pool())
+        print(i)
+        print(pyarrow.default_memory_pool())
 
 
 if __name__ == "__main__":
