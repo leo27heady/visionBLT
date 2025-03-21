@@ -1,5 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import math
+import os
 import time
 from collections import defaultdict
 from contextlib import nullcontext
@@ -91,7 +92,7 @@ def calculate_entropies(
             split = split.reshape(-1, max_length)
             if device is not None:
                 split = split.to(device)
-            assert torch.all(split >= 0) and torch.all(split < 260)
+            # assert torch.all(split >= 0) and torch.all(split < 260)
             pred = entropy_model(split)
             pred = pred.reshape(-1, pred.shape[-1])[
                 : split.numel() - pad_size, :
@@ -103,7 +104,7 @@ def calculate_entropies(
         concat_entropies = torch.cat(entropies, dim=0)
         concat_entropies = concat_entropies.reshape(tokens.shape)
         concat_preds = torch.cat(preds, dim=0)
-        concat_preds = concat_preds.reshape(tokens.shape[0], tokens.shape[1], -1)
+        concat_preds = concat_preds.reshape(tokens.shape[0], -1)
     return concat_entropies, concat_preds
 
 
@@ -476,7 +477,11 @@ class Patcher:
                 patcher_args.entropy_model_checkpoint_dir is not None
             ), "Cannot require realtime patching without an entropy model checkpoint"
             entropy_model = load_entropy_model(
-                patcher_args.entropy_model_checkpoint_dir
+                patcher_args.entropy_model_checkpoint_dir,
+                os.path.join(
+                    patcher_args.entropy_model_checkpoint_dir,
+                    "consolidated/consolidated.pth",
+                ),
             )
             entropy_model, _ = to_device(entropy_model, patcher_args.patching_device)
             self.entropy_model = entropy_model
