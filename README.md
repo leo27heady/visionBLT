@@ -114,4 +114,4 @@ Lingua Code
 
 The BLT code is partially based on Meta Lingua.
 
-Meta Lingua is licensed under BSD-3-Clause license. Refer to the LICENSE file in the top level directory.
+Meta BLT is licensed under CC-BY-NC-4.0 license. Refer to the LICENSE file in the top level directory.
