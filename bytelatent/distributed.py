@@ -531,10 +531,6 @@ def parallelize_model(
             for i in range(len(module.layers)):
                 module.layers[i] = checkpoint_wrapper(
                     module.layers[i],
-                    context_fn=partial(
-                        create_selective_checkpoint_contexts,
-                        get_default_policy(no_recompute_ops),
-                    ),
                 )
 
     if distributed_args.compile:
