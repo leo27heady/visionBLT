@@ -260,6 +260,9 @@ class ValidationArgs(BaseModel):
     max_n_docs: int | None = (
         None  # If None the whole validation file is used -> /!\ This number of steps is gpu dependent (100 max steps on 8 gpus = 800 steps on 1 gpu)
     )
+    max_n_batches: int | None = (
+        None  # If None the whole validation file is used -> /!\ This number of steps is gpu dependent (100 max steps on 8 gpus = 800 steps on 1 gpu)
+    )
     use_val_from_train_src: bool = True  # Use the validation set from training sources
     root_dir: str = ""
     sources: list[str] = []  # Other sources to eval on
