@@ -301,7 +301,7 @@ def setup_torch_distributed(dist_args: DistributedArgs):
         - global_rank
         - world_size
     """
-    mp.set_start_method(dist_args.spawn_method)
+    mp.set_start_method(dist_args.spawn_method, force=True)
     with mp.Manager():
         pass
 
