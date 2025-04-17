@@ -25,7 +25,11 @@ from bytelatent.checkpoint import (
 )
 from bytelatent.config_parser import parse_args_to_pydantic_model
 from bytelatent.data.file_util import get_fs
-from bytelatent.distributed import get_global_rank, setup_torch_distributed, DistributedArgs
+from bytelatent.distributed import (
+    DistributedArgs,
+    get_global_rank,
+    setup_torch_distributed,
+)
 from bytelatent.model.blt import ByteLatentTransformer
 from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
 from bytelatent.transformer import LMTransformer
@@ -388,10 +392,7 @@ class PackedCausalTransformerGenerator:
         return generation, loglikelihood, greedy
 
 
-def load_consolidated_model_and_tokenizer(
-    consolidated_path,
-    init_distributed=False
-):
+def load_consolidated_model_and_tokenizer(consolidated_path, init_distributed=False):
     if init_distributed:
         distributed_args = DistributedArgs()
         distributed_args.configure_world()

@@ -206,7 +206,9 @@ def eval_ppl_on_path(
                 pred = model(x, patch_lengths=patch_lengths)
             else:
                 pred = model(x)
-            loss = F.cross_entropy(pred.flatten(0, 1), y.flatten(0, 1), reduction="sum", ignore_index=0)
+            loss = F.cross_entropy(
+                pred.flatten(0, 1), y.flatten(0, 1), reduction="sum", ignore_index=0
+            )
             total_loss += loss.item()
         else:
             raise NotImplementedError()
