@@ -476,12 +476,19 @@ class Patcher:
             assert (
                 patcher_args.entropy_model_checkpoint_dir is not None
             ), "Cannot require realtime patching without an entropy model checkpoint"
+            maybe_consolidated = os.path.join(
+                patcher_args.entropy_model_checkpoint_dir,
+                "consolidated/consolidated.pth",
+            )
+            if os.path.exists(maybe_consolidated):
+                state_path = maybe_consolidated
+            else:
+                state_path = os.path.join(
+                    patcher_args.entropy_model_checkpoint_dir, "consolidated.pth"
+                )
             entropy_model = load_entropy_model(
                 patcher_args.entropy_model_checkpoint_dir,
-                os.path.join(
-                    patcher_args.entropy_model_checkpoint_dir,
-                    "consolidated/consolidated.pth",
-                ),
+                state_path,
             )
             entropy_model, _ = to_device(entropy_model, patcher_args.patching_device)
             self.entropy_model = entropy_model
