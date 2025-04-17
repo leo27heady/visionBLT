@@ -215,7 +215,7 @@ class ArrowFileIterator(StatefulIterator):
                 raise ValueError(f"Unknown file format: {self.file_format}")
             for i in range(len(sample_ids)):
                 out = BltExample(
-                    sample_id=sample_ids[i],
+                    sample_id=str(sample_ids[i]),
                     entropies=entropies[i] if entropies is not None else None,
                     text=texts[i],
                     tokens=None,
@@ -249,7 +249,7 @@ class ArrowFileIterator(StatefulIterator):
                 raise ValueError(f"Unknown file format: {self.file_format}")
             for i in range(len(sample_ids)):
                 out = BltExample(
-                    sample_id=sample_ids[i],
+                    sample_id=str(sample_ids[i]),
                     entropies=entropies[i] if entropies is not None else None,
                     text=texts[i],
                     tokens=None,

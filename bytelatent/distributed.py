@@ -301,7 +301,7 @@ def setup_torch_distributed(dist_args: DistributedArgs):
         - global_rank
         - world_size
     """
-    mp.set_start_method(dist_args.spawn_method)
+    mp.set_start_method(dist_args.spawn_method, force=True)
     with mp.Manager():
         pass
 
@@ -531,10 +531,6 @@ def parallelize_model(
             for i in range(len(module.layers)):
                 module.layers[i] = checkpoint_wrapper(
                     module.layers[i],
-                    context_fn=partial(
-                        create_selective_checkpoint_contexts,
-                        get_default_policy(no_recompute_ops),
-                    ),
                 )
 
     if distributed_args.compile:
