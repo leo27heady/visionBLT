@@ -169,4 +169,4 @@ internal/
 jobs_parallel-copy/
 wandb/
 *.ipynb
-
+hf-weights/

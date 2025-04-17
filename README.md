@@ -46,7 +46,25 @@ Once that is done you can activate the environment
 conda activate blt_<date>
 ```
 
-use the provided script to download and prepare data from huggingface (among `fineweb_edu`, `fineweb_edu_10bt`, or `dclm_baseline_1.0`).
+## Downloading HF Model Weights and Generating Text
+
+We have released weights on HF for the [BLT 1B Model](https://huggingface.co/facebook/blt-1b) and [BLT 7B Model](https://huggingface.co/facebook/blt-7b).
+We are actively working with HF to make BLT available in [Transformers](https://huggingface.co/docs/transformers/en/index) and will update this when it is.
+In the meantime, you can follow these instructions to load model weights, initialize a model, and generate text.
+These instructions have been tested on H100 GPUs, but we can only offer suggestions on running on other hardware.
+
+1. On the model weights HF page, create a HuggingFace account, request access to weights, and wait for approval.
+2. On the huggingface cli, login: `huggingface-cli login`
+3. Download the model weights with: `python download_blt_weights.py`, which will load to `hf-weights`
+4. Run the generate demo: `python demo.py "A BLT has"`.
+
+The demo generates text, but is also a good starting point for loading BLT in your own code.
+
+## Downloading Training Data
+
+Note: The following instructions are not well tested in the BLT code as it is based on the lingua code, which we have diverged from.
+
+Use the provided script to download and prepare data from huggingface (among `fineweb_edu`, `fineweb_edu_10bt`, or `dclm_baseline_1.0`).
 This command will download the `fineweb_edu` and prepare it for training in the `./data` directory, specifying the amount of memory `terashuf` (the tool used to shuffle samples) will be allocated. By default, the number of chunks (`nchunks`) is 32. If you are running on fewer than 32 GPUs, it is recommended to set `nchunks` to 1 or to match `nchunks` with the number of GPUs (`nchunks` = NGPUs). See [here](https://github.com/facebookresearch/lingua/issues/55#issuecomment-2483643076) for more details.
 
 ```bash
