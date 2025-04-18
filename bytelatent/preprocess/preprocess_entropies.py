@@ -82,7 +82,7 @@ def main(
 
     if dry_run:
         return
-    entropy_model = load_entropy_model(
+    entropy_model, _ = load_entropy_model(
         entropy_model_checkpoint_dir,
         entropy_model_state_dict_path,
         device=patching_device,
