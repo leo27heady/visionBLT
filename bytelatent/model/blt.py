@@ -4,7 +4,7 @@ from enum import Enum, auto
 from typing import Any, Optional
 
 import torch
-from pydantic import ConfigDict, model_validator
+from pydantic import model_validator
 from torch import nn
 from torch.nn.attention.flex_attention import create_block_mask
 from typing_extensions import Self
@@ -13,13 +13,14 @@ from bytelatent.base_transformer import (
     BaseTransformerArgs,
     InitStdFactor,
     SequenceModelWithOutput,
-    TransformerBlock,
 )
 from bytelatent.data.patcher import Patcher, PatcherArgs
 from bytelatent.model.latent_transformer import GlobalTransformer
 from bytelatent.model.local_models import LocalDecoder, LocalEncoder, LocalModelArgs
 from bytelatent.model.utils import downsample
 from bytelatent.tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
+
+from huggingface_hub import PyTorchModelHubMixin
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -767,7 +768,17 @@ def compute_hash_embeddings(
     return local_encoder_embeds
 
 
-class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
+class ByteLatentTransformer(
+    nn.Module,
+    SequenceModelWithOutput,
+    PyTorchModelHubMixin,
+    repo_url="https://github.com/facebookresearch/blt",
+    paper_url="https://arxiv.org/abs/2412.09871",
+    pipeline_tag="text-generation",
+    license="other",
+    license_name="fair-noncommercial-research-license",
+    license_link="https://huggingface.co/facebook/blt/blob/main/LICENSE",
+):
     """
     The ByteLatentTransformer (BLT) is a byte-level language model architecture that processes byte sequences
     by dynamically segmenting them into patches. It uses a combination of local encoders, global transformers,
@@ -856,6 +867,11 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
                     max_patch_length=args.max_patch_length,
                 )
             )
+
+    def push_to_hub(self, *args, **kwargs):
+        raise ValueError(
+            "For meta authors: Do not push BLT weights with this, save weights with save_pretrained() then push them manually to HF hub to ensure the repository metadata is correct."
+        )
 
     def get_output_seq_len(self):
         return self.max_seqlen
