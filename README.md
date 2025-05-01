@@ -55,8 +55,37 @@ These instructions have been tested on H100 GPUs, but we can only offer suggesti
 
 1. On the model weights HF page, create a HuggingFace account, request access to weights, and wait for approval.
 2. On the huggingface cli, login: `huggingface-cli login`
-3. Download the model weights with: `python download_blt_weights.py`, which will load to `hf-weights`
-4. Run the generate demo: `python demo.py "A BLT has"`.
+
+From here there are two options: (1) load weights in our train script and (2) loading weights via HF hub to use for anything else.
+
+## Load Weights via HF Hub
+
+In your terminal:
+
+```bash
+python -m bytelatent.hf load-transformers --entropy-repo facebook/blt-entropy --blt-repo facebook/blt-1b hub --prompt "My test prompt"
+```
+
+In your own code:
+
+```python
+from bytelatent.transformer import LMTransformer
+from bytelatent.model.blt import ByteLatentTransformer
+from bytelatent.hf import BltTokenizerAndPatcher
+
+entropy_repo = "facebook/blt-entropy"
+blt_repo = "facebook/blt-1b"
+entropy_model = LMTransformer.from_pretrained(entropy_repo)
+blt_model = ByteLatentTransformer.from_pretrained(blt_repo)
+tok_and_patcher = BltTokenizerAndPatcher.from_pretrained(blt_repo)
+tokenizer = tok_and_patcher.tokenizer_args.build()
+patcher = tok_and_patcher.patcher_args.build()
+```
+
+## Load Weights for Running BLT Train Script
+
+1. Download the model weights with: `python download_blt_weights.py`, which will load to `hf-weights`
+2. Run the generate demo: `python demo.py "A BLT has"`.
 
 The demo generates text, but is also a good starting point for loading BLT in your own code.
 
