@@ -34,7 +34,7 @@ def test_entropy_model():
             "bpe_tokenizer_path": BLT_DATA / "tokenizer_final_32k.minus_inf_ws.model"
         },
     )
-    entropy_model = load_entropy_model(
+    entropy_model, _ = load_entropy_model(
         BLT_DATA / "checkpoint_0100000_consolidated",
         os.path.join(
             BLT_DATA,
