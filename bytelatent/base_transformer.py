@@ -34,7 +34,7 @@ else:
     flex_attention_comp = None
 
 
-class InitStdFactor(Enum):
+class InitStdFactor(str, Enum):
     DISABLED = "disabled"  # Init std is divided by 1.0
     GLOBAL_DEPTH = "global_depth"  # Init std is divided by sqrt(2*n_layers)
     CURRENT_DEPTH = "current_depth"  # Init std is divided by sqrt(2*depth)
