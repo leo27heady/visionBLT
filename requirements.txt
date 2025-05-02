@@ -5,7 +5,6 @@ rouge-score
 sacrebleu
 sentencepiece
 tiktoken
-fsspec
 blobfile
 wandb
 viztracer
@@ -21,4 +20,4 @@ submitit
 typer
 rich
 fsspec[full]
-orjson
+huggingface-hub==0.30.*
