@@ -26,15 +26,16 @@ env_prefix=blt_$current_date
 # Create the conda environment
 
 source $CONDA_ROOT/etc/profile.d/conda.sh
-conda create -n $env_prefix python=3.11 -y -c anaconda
+conda create -n $env_prefix python=3.12 -y
 conda activate $env_prefix
 
 echo "Currently in env $(which python)"
 
 # Install packages
-pip install torch==2.5.0 xformers --index-url https://download.pytorch.org/whl/cu121
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
 pip install ninja
-pip install --requirement requirements.txt
+pip install -v -U git+https://github.com/facebookresearch/xformers.git@de742ec3d64bd83b1184cc043e541f15d270c148
+pip install -r requirements.txt
 
 # End timer
 end_time=$(date +%s)

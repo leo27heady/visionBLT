@@ -28,8 +28,25 @@ Please file an issue and/or be patient while we make more of our code public!
 
 ## Quick start
 
-The following commands launch a SLURM job that creates an environment for Meta Lingua.
-The env creation should take around 5 minutes without counting downloads.
+There are three ways you can create your environment.
+
+### Option 1: conda + pip
+
+Run these commands in your terminal or a script:
+
+```bash
+git clone https://github.com/facebookresearch/blt
+cd blt
+conda create -n blt python=3.12
+conda activate blt
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
+pip install ninja
+pip install -v -U git+https://github.com/facebookresearch/xformers.git@de742ec3d64bd83b1184cc043e541f15d270c148
+pip install -r requirements.txt
+conda activate blt
+```
+
+### Option 2: Slurm Job to Build Env
 
 ```bash
 git clone https://github.com/facebookresearch/blt
@@ -44,6 +61,18 @@ Once that is done you can activate the environment
 
 ```bash
 conda activate blt_<date>
+```
+
+### Options 3 (experimental, reproducible): uv
+
+Run the following to install the env using [uv](https://docs.astral.sh/uv/).
+The main benefit of this method is that the build is reproducible since there is a lock file.
+
+```bash
+uv pip install --group pre_build --no-build-isolation
+uv pip install --group compile_xformers --no-build-isolation
+uv sync
+uv run python demo.py "A BLT has"
 ```
 
 ## Downloading HF Model Weights and Generating Text
