@@ -23,12 +23,22 @@ app = typer.Typer()
 S3_PREFIX = "s3://"
 
 
-def get_fs(path: str, s3_profile: str | None = None) -> fsspec.AbstractFileSystem:
+def get_fs(
+    path: str, s3_profile: str | None = None, use_listings_cache: None | bool = None
+) -> fsspec.AbstractFileSystem:
     if path.startswith("s3://"):
+        config_kwargs = {"retries": {"max_attempts": 10, "mode": "standard"}}
         if s3_profile is None:
-            return fsspec.filesystem("s3")
+            return fsspec.filesystem(
+                "s3", use_listings_cache=use_listings_cache, config_kwargs=config_kwargs
+            )
         else:
-            return fsspec.filesystem("s3", profile=s3_profile)
+            return fsspec.filesystem(
+                "s3",
+                profile=s3_profile,
+                use_listings_cache=use_listings_cache,
+                config_kwargs=config_kwargs,
+            )
     else:
         return fsspec.filesystem("file")
 

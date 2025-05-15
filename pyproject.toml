@@ -45,6 +45,10 @@ pre_build = [
     "torch==2.6.0.dev20241112",
 ]
 compile_xformers = ['xformers']
+dev = [
+    "ipython>=9.2.0",
+    "pudb>=2025.1",
+]
 
 
 [tool.uv]
