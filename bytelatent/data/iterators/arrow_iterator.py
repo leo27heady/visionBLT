@@ -107,7 +107,13 @@ class ArrowFileIterator(StatefulIterator):
             if self.filesystem_type == "file":
                 self.fs = fsspec.filesystem("file")
             elif self.filesystem_type == "s3":
-                self.fs = fsspec.filesystem("s3", profile=s3_profile)
+                config_kwargs = {"retries": {"max_attempts": 10, "mode": "standard"}}
+                self.fs = fsspec.filesystem(
+                    "s3",
+                    profile=s3_profile,
+                    use_listings_cache=True,
+                    config_kwargs=config_kwargs,
+                )
             else:
                 raise ValueError("Unknown filesystem")
             logger.info("Arrow iterator using fs=%s", self.fs)
@@ -118,7 +124,9 @@ class ArrowFileIterator(StatefulIterator):
             ), "Must specify file_Path if dataset_files is None"
             if file_format == "json":
                 if self.fs is None:
-                    self.fs = get_fs(file_path, s3_profile=s3_profile)
+                    self.fs = get_fs(
+                        file_path, s3_profile=s3_profile, use_listings_cache=True
+                    )
                     if isinstance(self.fs, s3fs.S3FileSystem):
                         self.filesystem_type = "s3"
                     else:
@@ -137,11 +145,16 @@ class ArrowFileIterator(StatefulIterator):
                     data_dir, f"{os.path.basename(jsonl_file)}.shard_*.arrow"
                 )
                 if self.fs is None:
-                    self.fs = get_fs(data_dir_with_glob, s3_profile=s3_profile)
+                    self.fs = get_fs(
+                        data_dir_with_glob,
+                        s3_profile=s3_profile,
+                        use_listings_cache=True,
+                    )
                     if isinstance(self.fs, s3fs.S3FileSystem):
                         self.filesystem_type = "s3"
                     else:
                         self.filesystem_type = "file"
+                logger.info("Globbing: %s", data_dir_with_glob)
                 shard_files = self.fs.glob(data_dir_with_glob)
 
                 for s in shard_files:
@@ -165,7 +178,9 @@ class ArrowFileIterator(StatefulIterator):
                 for f in dataset_files:
                     assert f.startswith("s3://")
             if self.fs is None:
-                self.fs = get_fs(dataset_files[0], s3_profile=s3_profile)
+                self.fs = get_fs(
+                    dataset_files[0], s3_profile=s3_profile, use_listings_cache=True
+                )
                 if isinstance(self.fs, s3fs.S3FileSystem):
                     self.filesystem_type = "s3"
                 else:
