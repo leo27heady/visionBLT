@@ -4,11 +4,10 @@ import typer
 from huggingface_hub import snapshot_download
 
 
-def main(models: list[str] = ["blt-1b", "blt-7b"]):
+def main():
     if not os.path.exists("hf-weights"):
         os.makedirs("hf-weights")
-    for model in models:
-        snapshot_download(f"facebook/{model}", local_dir=f"hf-weights/{model}")
+    snapshot_download(f"facebook/blt", local_dir=f"hf-weights")
 
 
 if __name__ == "__main__":
