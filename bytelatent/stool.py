@@ -26,8 +26,10 @@ class StoolArgs(BaseModel):
     dirs_exists_ok: bool = (
         False  # Wether to copy new code and config and run regardless that dir exists
     )
-    override: bool = False  # Whether to delete dump dir and restart, requires confirmation
-    force_override: bool = False # Does not require interaction
+    override: bool = (
+        False  # Whether to delete dump dir and restart, requires confirmation
+    )
+    force_override: bool = False  # Does not require interaction
     nodes: int = -1  # The number of nodes to run the job on.
     ngpu: int = 8  # The number of GPUs required per node.
     ncpu: int = 16  # The number of CPUs allocated per GPU.
@@ -41,7 +43,6 @@ class StoolArgs(BaseModel):
     partition: str = "learn"
     stdout: bool = False
     dry_run: bool = False
-
 
 
 def copy_dir(input_dir: str, output_dir: str) -> None:
@@ -130,7 +131,9 @@ def launch_job(args: StoolArgs):
     job_name = args.name or args.model_conf["name"]
     dump_dir = os.path.join(args.dump_dir, job_name) or args.model_conf["dump_dir"]
     print("Creating directories...")
-    os.makedirs(dump_dir, exist_ok=args.dirs_exists_ok or args.override or args.force_override)
+    os.makedirs(
+        dump_dir, exist_ok=args.dirs_exists_ok or args.override or args.force_override
+    )
     if args.override or args.force_override:
         if args.force_override:
             shutil.rmtree(dump_dir)
@@ -161,10 +164,10 @@ def launch_job(args: StoolArgs):
         else ""
     )
     env = jinja2.Environment(
-        loader=jinja2.PackageLoader('bytelatent'),
+        loader=jinja2.PackageLoader("bytelatent"),
         autoescape=jinja2.select_autoescape(),
     )
-    template = env.get_template('stool_template.sh.jinja')
+    template = env.get_template("stool_template.sh.jinja")
     sbatch_jinja = template.render(
         name=job_name,
         script=args.script,
