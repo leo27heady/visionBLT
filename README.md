@@ -93,7 +93,7 @@ From here there are two options: (1) load weights in our train script and (2) lo
 In your terminal:
 
 ```bash
-python -m bytelatent.hf load-transformers --entropy-repo facebook/blt-entropy --blt-repo facebook/blt-1b hub --prompt "My test prompt"
+python -m bytelatent.hf load-transformers --entropy-repo facebook/blt-entropy --blt-repo facebook/blt-1b --prompt "My test prompt" hub
 ```
 
 In your own code:

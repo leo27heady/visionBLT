@@ -1,5 +1,5 @@
 import copy
-from typing import Type, TypeVar, Any
+from typing import Any, Type, TypeVar
 
 import omegaconf
 from omegaconf import DictConfig, OmegaConf
@@ -69,6 +69,7 @@ def parse_args_with_default(
 
 T = TypeVar("T", bound=BaseModel)
 
+
 def get_pydantic_default_args(args_cls: Type[T]) -> dict[str, Any]:
     defaults = {}
     for field, info in args_cls.model_fields.items():
@@ -76,8 +77,11 @@ def get_pydantic_default_args(args_cls: Type[T]) -> dict[str, Any]:
             defaults[field] = info.default
     return defaults
 
+
 def parse_args_to_pydantic_model(
-    args_cls: Type[T], cli_args: DictConfig | None = None, instantiate_default_cls: bool = True
+    args_cls: Type[T],
+    cli_args: DictConfig | None = None,
+    instantiate_default_cls: bool = True,
 ) -> T:
     if instantiate_default_cls:
         default_cfg = OmegaConf.create(args_cls().model_dump())
