@@ -168,19 +168,20 @@ class CheckpointManager:
 
         logger.info(f"Removing folders: {folder_to_remove}")
 
-        if dist.get_rank() == 0:
-            for folder in folder_to_remove:
-                for file in self.fs.ls(folder):
-                    if self.fs.isfile(file):
-                        self.fs.rm_file(file)
-                    elif self.fs.isdir(file):
-                        assert os.path.name(file) in [CONSOLIDATE_FOLDER]
-                        for f in self.fs.ls(file):
-                            self.fs.rm(f)
-                        self.fs.rmdir(file)
-                self.fs.rmdir(folder)
+        # if dist.get_rank() == 0:
+        for folder in folder_to_remove:
+            for file in self.fs.ls(folder):
+                if self.fs.isfile(file):
+                    self.fs.rm_file(file)
+                elif self.fs.isdir(file):
+                    assert os.path.name(file) in [CONSOLIDATE_FOLDER]
+                    for f in self.fs.ls(file):
+                        self.fs.rm(f)
+                    self.fs.rmdir(file)
+            self.fs.rmdir(folder)
 
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
 
         self.existing_saves = list(folder_to_keep)
         self.existing_saves.sort(key=lambda p: _get_key_step(os.path.basename(p)))
@@ -257,14 +258,14 @@ class CheckpointManager:
             )
 
         # Add json dump here
-        dp_rank, tp_rank = self._get_dp_tp_mesh(device_mesh)
-        if tp_rank == 0:
-            train_state_name = TRAIN_STATE_NAME.format(dp_rank)
-            train_state_full_path = os.path.join(curr_save_dir, train_state_name)
-            logger.info(f"Saving train state to: {train_state_full_path}")
-            with self.fs.open(train_state_full_path, "w") as f:
-                json.dump(train_state.state_dict(), f)
-            logger.info("Train state saved !")
+        # dp_rank, tp_rank = self._get_dp_tp_mesh(device_mesh)
+        # if tp_rank == 0:
+        train_state_name = TRAIN_STATE_NAME.format(0)
+        train_state_full_path = os.path.join(curr_save_dir, train_state_name)
+        logger.info(f"Saving train state to: {train_state_full_path}")
+        with self.fs.open(train_state_full_path, "w") as f:
+            json.dump(train_state.state_dict(), f)
+        logger.info("Train state saved !")
 
         self.existing_saves.append(curr_save_dir)
 
@@ -321,7 +322,8 @@ class CheckpointManager:
     def instantiate_and_make_dir(cls, args: CheckpointArgs):
         if get_is_master():
             os.makedirs(args.path, exist_ok=True)
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
 
         return cls(args)
 

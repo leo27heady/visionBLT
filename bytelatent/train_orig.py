@@ -219,39 +219,39 @@ def compute_loss(p, y, mask, scale):
 
 def train(args: TrainArgs):
     with ExitStack() as context_stack:
-        # pyarrow.set_io_thread_count(4)
-        # pyarrow.set_cpu_count(4)
+        pyarrow.set_io_thread_count(4)
+        pyarrow.set_cpu_count(4)
         tokenizer = args.data.tokenizer_args.build()
         validate_train_args(
             args,
             tokenizer.get_vocab_size(),
         )
         dump_fs = get_fs(args.dump_dir, s3_profile=args.checkpoint.s3_profile)
-        # if get_is_master():
-        #     dump_fs.mkdirs(args.dump_dir, exist_ok=True)
-        #     config_yaml_str = args.dump_to_yaml_str()
-        #     logging.info("TrainArgs: \n%s", config_yaml_str)
-        #     dump_fs.write_text(
-        #         os.path.join(args.dump_dir, "config.yaml"), config_yaml_str
-        #     )
+        if get_is_master():
+            dump_fs.mkdirs(args.dump_dir, exist_ok=True)
+            config_yaml_str = args.dump_to_yaml_str()
+            logging.info("TrainArgs: \n%s", config_yaml_str)
+            dump_fs.write_text(
+                os.path.join(args.dump_dir, "config.yaml"), config_yaml_str
+            )
         init_logger(os.path.join(args.dump_dir, "train.log"), fs=dump_fs)
-        # init_signal_handler(set_preemption_flag)  # For handling preemption signals.
-        # setup_env(args.env)
-        # setup_torch_distributed(args.distributed)
-        # world_mesh = get_device_mesh(args.distributed)
+        init_signal_handler(set_preemption_flag)  # For handling preemption signals.
+        setup_env(args.env)
+        setup_torch_distributed(args.distributed)
+        world_mesh = get_device_mesh(args.distributed)
         logger.info(f"Starting job: {args.name}")
 
         # build dataloader
         # need dp world size and rank
-        # dp_mesh = world_mesh["dp_replicate"]
-        # dp_degree = dp_mesh.size()
-        # dp_rank = dp_mesh.get_local_rank()
-        # if args.distributed.dp_shard > 1:
-        #     dp_rank = dp_rank * dp_degree + world_mesh["dp_shard"].get_local_rank()
-        #     dp_degree *= world_mesh["dp_shard"].size()
+        dp_mesh = world_mesh["dp_replicate"]
+        dp_degree = dp_mesh.size()
+        dp_rank = dp_mesh.get_local_rank()
+        if args.distributed.dp_shard > 1:
+            dp_rank = dp_rank * dp_degree + world_mesh["dp_shard"].get_local_rank()
+            dp_degree *= world_mesh["dp_shard"].size()
 
-        # logger.info(f"Running on dp rank : {dp_rank}")
-        # logger.info(f"Running on dp size : {dp_degree}")
+        logger.info(f"Running on dp rank : {dp_rank}")
+        logger.info(f"Running on dp size : {dp_degree}")
 
         torch.manual_seed(args.seed)
         logger.info("Building model")
@@ -270,15 +270,15 @@ def train(args: TrainArgs):
 
         model_param_count = get_num_params(model)
 
-        # model = parallelize_model(
-        #     model,
-        #     world_mesh,
-        #     model_args,
-        #     args.distributed,
-        #     fsdp_grouping_plan=build_fsdp_grouping_plan(model_args),
-        #     tp_parallelize=tp_parallelize,
-        #     no_recompute_ops=get_no_recompute_ops(),
-        # )
+        model = parallelize_model(
+            model,
+            world_mesh,
+            model_args,
+            args.distributed,
+            fsdp_grouping_plan=build_fsdp_grouping_plan(model_args),
+            tp_parallelize=tp_parallelize,
+            no_recompute_ops=get_no_recompute_ops(),
+        )
 
         # Once we shard the model on different gpus we can actually initialize the model
         # First we create empty tensors of the correct shapes
@@ -316,7 +316,7 @@ def train(args: TrainArgs):
 
         # build optimizer after apply parallelisms to the model
         optimizer, scheduler = build_optimizer(model, args.optim, args.steps)
-        data_loader = args.data.build_from_rank(0, 1)
+        data_loader = args.data.build_from_rank(dp_rank, dp_degree)
         data_loader_state = data_loader.get_state()
 
         train_state = TrainState(
@@ -328,7 +328,22 @@ def train(args: TrainArgs):
         )
 
         checkpoint = CheckpointManager.instantiate_and_make_dir(args.checkpoint)
-        # checkpoint.load(model, optimizer, train_state, world_mesh)
+        checkpoint.load(model, optimizer, train_state, world_mesh)
+        # Either load from latest checkpoint or start from scratch
+        if args.probe_freq is not None:
+            # TODO: Convert this to fsspec compatible
+            if get_is_master():
+                os.makedirs(os.path.join(args.dump_dir, "probe"), exist_ok=True)
+            torch.distributed.barrier()
+            probe = AutoProbeD(
+                model,
+                (
+                    os.path.join(args.dump_dir, "probe", f"probe.{dp_rank}.jsonl")
+                    if (dp_rank % 128 == 0)
+                    else None
+                ),
+            )
+            probe_mod = model._orig_mod if args.distributed.compile else model
 
         gc.disable()
 
@@ -362,9 +377,6 @@ def train(args: TrainArgs):
             curr_lr = float(optimizer.param_groups[0]["lr"])
             data_load_start = timer()
             batch = next(batch_iterator)
-            # print(batch)
-            # print(f"batch.x.shape={batch.x.shape}, batch.y.shape={batch.y.shape}, batch.mask.shape={batch.mask.shape}, batch.patch_lengths.shape={batch.patch_lengths.shape}")
-            
             batch_x = torch.from_numpy(
                 batch.x,
             ).cuda()
@@ -420,6 +432,43 @@ def train(args: TrainArgs):
             end_timer = torch.cuda.Event(enable_timing=True)
             start_timer.record()
 
+            # This is an automatic probe that will compute statistics
+            # of all linears' inputs, weights and outputs
+            # along with attention logits and entropy
+            # both in forward and backward pass
+            tok_loss = None
+            if (args.probe_freq is not None) and every_n_steps(
+                train_state, args.probe_freq, acc_step=1 % args.grad_acc_steps
+            ):
+                # Here we do a fake forward and backward pass on a smaller
+                # batch size to avoid OOM
+                # This assumes the model has no stateful layers (batch norm..)
+                assert (
+                    next(probe_mod.parameters()).grad is None
+                ), "Can't probe model if grads are not reset"
+
+                with probe:
+                    probe.metadata = {
+                        "it": train_state.step,
+                        "global_step": train_state.step,
+                        "loop": "lingua",
+                    }
+                    # Non compiled model uses roughly 2x memory in our exps
+                    # So we divide bsz by 2 or seqlen by 2
+                    probe_bsz = max(1, bsz // 2)
+                    probe_seq = seqlen if (bsz // 2 >= 1) else (seqlen // 2)
+                    probe_loss = probe_mod(
+                        batch_x[:probe_bsz, :probe_seq],
+                        batch_y[:probe_bsz, :probe_seq],
+                    )
+                    probe_loss.backward()
+                    # We zero grads to cancel this fake step
+                    optimizer.zero_grad()
+
+                assert (
+                    next(probe_mod.parameters()).grad is None
+                ), "Probe model shouldn't have grads at this point"
+
             if args.train_entropy_model:
                 pred = model(batch_x)
             else:
@@ -428,7 +477,6 @@ def train(args: TrainArgs):
                 )
 
             loss, tok_loss = compute_loss(pred, batch_y, mask, train_state.scale)
-            # print(f"loss={loss}, tok_loss={tok_loss}")
 
             # We scale loss with grad_acc_steps so the gradient is the same
             # regardless of grad_acc_steps
@@ -482,7 +530,6 @@ def train(args: TrainArgs):
                 xformers.profiler.step()
 
             # log metrics
-            # print(f"train_state.acc_step={train_state.acc_step},  train_state.step={train_state.step}, args.logging.acc_freq={args.logging.acc_freq}")
             if every_n_steps(
                 train_state,
                 args.logging.freq,
@@ -500,7 +547,7 @@ def train(args: TrainArgs):
                 tokens_per_gpu = (
                     total_acc_steps * args.data.batch_size * args.data.seq_len
                 )
-                total_tokens = 1 * tokens_per_gpu
+                total_tokens = dp_degree * tokens_per_gpu
                 # This is an estimate and the correct values may change
                 # if you change the architecture
                 # Use xformer's analyze profile trace to get actual measurement
@@ -592,7 +639,7 @@ def train(args: TrainArgs):
                 # interval=Metrics averaged across the logging interval
                 # local=On one rank
                 # global=Across all ranks
-                print(
+                logger.info(
                     f"step: {train_state.step}"
                     f"  acc: {train_state.acc_step}"
                     f"  loss_gpu: {round(to_py_num(interval_loss_per_gpu), 4):>7}"
@@ -635,7 +682,7 @@ def train(args: TrainArgs):
                     optimizer,
                     train_state,
                     args,
-                    # device_mesh=world_mesh,
+                    device_mesh=world_mesh,
                 )
 
             if args.eval is not None and every_n_steps(
@@ -686,7 +733,7 @@ def train(args: TrainArgs):
                         optimizer,
                         train_state,
                         args,
-                        # device_mesh=world_mesh,
+                        device_mesh=world_mesh,
                     )
                 requeue_slurm_job()
                 sys.exit(0)
@@ -706,7 +753,7 @@ def train(args: TrainArgs):
                 optimizer,
                 train_state,
                 args,
-                # device_mesh=world_mesh,
+                device_mesh=world_mesh,
             )
         if isinstance(data_loader, MultiprocessIterator):
             logger.info("Closing MP iterator before exiting")

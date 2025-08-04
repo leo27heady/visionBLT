@@ -414,11 +414,12 @@ def load_consolidated_model_and_tokenizer(consolidated_path, init_distributed=Fa
     ]
     tokenizer = train_args.data.tokenizer_args.build()
     with fs.open(os.path.join(consolidated_path, CONSOLIDATE_NAME)) as f:
-        st_dict = torch.load(f, weights_only=True)
+        st_dict = torch.load(f, weights_only=True) # , map_location=torch.device("cuda:0")
     model.load_state_dict(st_dict["model"])
     model = model.cuda().eval()
     for param in model.parameters():
         param.data = param.data.to(dtype=param_dtype)
+    torch.cuda.empty_cache()
     return model, tokenizer, train_args
 
 

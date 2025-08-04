@@ -126,6 +126,8 @@ celerybeat.pid
 .venv
 env/
 venv/
+new_venv/
+train_checkpoints/
 ENV/
 env.bak/
 venv.bak/
@@ -168,5 +170,6 @@ figures/
 internal/
 jobs_parallel-copy/
 wandb/
-*.ipynb
+# *.ipynb
 hf-weights/
+alpaca-cleaned/
