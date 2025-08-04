@@ -74,6 +74,7 @@ def find_and_sanitize_chunks(
 def distribute_data_to_rank(
     *,
     dataset_path: str,
+    dataset_files: list[str] | None,
     preprocess_dir: str,
     entropy_model_name: str | None,
     arrow_batch_size: int,
@@ -97,7 +98,7 @@ def distribute_data_to_rank(
                     worker_id=worker_id,
                     num_workers=n_workers_per_chunk,
                     preprocess_dir=preprocess_dir,
-                    dataset_files=None,
+                    dataset_files=dataset_files,
                     entropy_model_name=entropy_model_name,
                     arrow_batch_size=arrow_batch_size,
                     s3_profile=s3_profile,
@@ -162,15 +163,16 @@ class DataloaderArgs(BaseModel):
         source_to_sequence_iterator: dict[str, SequenceIterator] = {}
         for dataset_path in self.sources:
             shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
-            arrow_iterator = distribute_data_to_rank(
-                file_format=self.file_format,
-                dataset_path=os.path.join(self.root_dir, dataset_path),
+            arrow_iterator = ArrowFileIterator(
+                file_path=self.dataset_files[0],
+                file_format="json",
+                worker_id=0,
+                num_workers=1,
                 preprocess_dir=self.preprocess_dir,
+                dataset_files=self.dataset_files,
                 entropy_model_name=self.entropy_model_name,
                 arrow_batch_size=self.arrow_batch_size,
-                rank=rank,
-                world_size=world_size,
-                s3_profile=self.s3_profile,
+                s3_profile=None,
             )
             looping_iterator = LoopingIterator(arrow_iterator)
             preprocess_iterator = PreprocessIterator(

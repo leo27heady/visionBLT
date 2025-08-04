@@ -1054,11 +1054,12 @@ class ByteLatentTransformer(
         self.local_decoder.init_weights()
 
         emb_std = self.local_encoder.dim ** (-0.5)
-        for emb in self.encoder_hash_tok_embedding:
-            nn.init.trunc_normal_(
-                emb.weight,
-                mean=0.0,
-                std=emb_std,
-                a=-3 * emb_std,
-                b=3 * emb_std,
-            )
+        if self.encoder_hash_tok_embedding:
+            for emb in self.encoder_hash_tok_embedding:
+                nn.init.trunc_normal_(
+                    emb.weight,
+                    mean=0.0,
+                    std=emb_std,
+                    a=-3 * emb_std,
+                    b=3 * emb_std,
+                )

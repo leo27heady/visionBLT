@@ -29,10 +29,10 @@ model:
   patching_mode: "space"
   tie_local_encoder_decoder_logits: false
   patch_in_forward: false
-  max_encoder_seq_length: 12288
+  max_encoder_seq_length: 3072
   pad_to_max_length: true
   patching_threshold: 3.1439168453216553
-  encoder_hash_byte_group_size: [4]
+  encoder_hash_byte_group_size: null
   encoder_hash_byte_group_vocab: 50002
   encoder_hash_byte_group_nb_functions: 3
   encoder_enable_byte_ngrams: false
@@ -46,7 +46,7 @@ model:
   cross_attn_nheads: 4
   cross_attn_all_layers_decoder: true
   cross_attn_all_layers_encoder: true
-  cross_attn_use_flex_attention: true
+  cross_attn_use_flex_attention: false
   cross_attn_init_by_pooling: true
   log_patch_lengths: true
   non_linearity: "swiglu"
@@ -64,27 +64,31 @@ model:
   alpha_depth: "disabled"
   max_length: 256
   local_attention_window_len: 512
-  max_seqlen: 12288
   downsampling_by_pooling: "max"
 
 data:
-  root_dir: ???
+  root_dir: .
   sources:
-    dclm_baseline_1.0: 1.0
+    alpaca-cleaned: 1.0
+  dataset_files: [alpaca-cleaned/1.json]
   batch_size: 2
   prefetch_size: 64
-  seq_len: 4096
-  load_async: true
-  preprocess_dir: ???
+  seq_len: 1024
+  max_encoder_seq_length: 3072
+  load_async: false
+  preprocess_dir: preprocess_dir
+  patcher_args:
+    patching_mode: space
   tokenizer_args:
     name: blt
-    init_kwargs:
-      bpe_tokenizer_path: ???
+  #   init_kwargs:
+  #     bpe_tokenizer_path: ???
 
 profiling:
   run: false
 
 checkpoint:
+  path: train_checkpoints
   dump:
     every: 500
     keep: 3
