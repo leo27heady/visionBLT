@@ -13,8 +13,10 @@ from xformers.ops import AttentionBias
 
 from bytelatent.base_transformer import (
     BaseTransformerArgs,
+    VisionModelArgs,
     InitStdFactor,
     RotaryEmbedding,
+    RotaryEmbeddingNd,
     TransformerBlock,
 )
 from bytelatent.model.latent_transformer import CrossAttention
@@ -36,6 +38,8 @@ class LocalModelArgs(BaseTransformerArgs):
     # Override defaults
     attn_impl: str | None = "xformers"
     attn_bias_type: str | None = "local_block_causal"
+    
+    vision: VisionModelArgs
 
     # Local encoder specific dimensions
     dropout: float
@@ -87,10 +91,11 @@ class LocalModelBase(nn.Module):
         if not self.use_rope:
             self.pos_embeddings = nn.Embedding(args.max_length, args.dim)
         else:
-            self.rope = RotaryEmbedding(
-                theta=args.rope_theta,
-                head_dim=args.head_dim or args.dim // args.n_heads,
+            self.rope = RotaryEmbeddingNd(
+                additional_dims=(args.vision.img_height // args.vision.scale_factor, args.vision.img_width // args.vision.scale_factor), 
+                feature_dim=args.head_dim or args.dim // args.n_heads, 
                 max_seqlen=args.max_seqlen,
+                base=args.rope_theta,
                 rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
             )
             self.pos_embeddings = None
@@ -127,26 +132,12 @@ class LocalModelBase(nn.Module):
             bias=False,
         )
 
-    def apply_embedding(self, tokens, embeds):
-        if embeds is not None:
-            return embeds
-        else:
-            return self.tok_embeddings(tokens)
-
     def init_weights(self, init_std=None):
         self.rope.reset_parameters()
         if hasattr(self, "norm"):
             self.norm.reset_parameters()
 
         init_std = init_std or (self.dim ** (-0.5))
-        if hasattr(self, "tok_embeddings"):
-            nn.init.trunc_normal_(
-                self.tok_embeddings.weight,
-                mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
-            )
         if self.pos_embeddings is not None:
             nn.init.trunc_normal_(
                 self.pos_embeddings.weight,
@@ -217,9 +208,25 @@ class LocalEncoder(LocalModelBase):
         self.cross_attn_all_layers_encoder = args.cross_attn_all_layers_encoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
         self.cross_attn_nheads = args.cross_attn_nheads
+        self.inner_channels = args.vision.inner_channels
 
-        self.tok_embeddings = nn.Embedding(self.vocab_size, args.dim)
+        # Image encoder
+        self.image_encoder = nn.Sequential(
+            # Prepare channels
+            nn.Conv2d(args.vision.img_channels, args.vision.inner_channels, kernel_size=3, padding=(1, 1)),
+            
+            # Process image
+            nn.Sequential(
+                nn.GroupNorm(args.vision.norm_channels, args.vision.inner_channels),
+                nn.SiLU(),
+                nn.Conv2d(args.vision.inner_channels, args.vision.inner_channels, kernel_size=3, stride=1, padding=1),
+            ),
 
+            # Downsample 2x
+            nn.Conv2d(args.vision.inner_channels, args.vision.inner_channels, 4, 2, 1)
+        )
+
+        # Cross-attention
         if self.cross_attn_encoder:
             self.cross_attn_layers = torch.nn.ModuleList()
             layers_to_add = args.n_layers if self.cross_attn_all_layers_encoder else 1
@@ -234,42 +241,21 @@ class LocalEncoder(LocalModelBase):
                     )
                 )
 
-    def apply_embedding(self, tokens, embeds):
-        if embeds is not None:
-            assert (
-                self.expects_hash_embeddings
-            ), "Not expecting embeddings to be passed."
-            return embeds
-        else:
-            return self.tok_embeddings(tokens)
-
     def forward(
         self,
-        tokens: torch.Tensor,
-        embeds: Optional[torch.Tensor] = None,
+        frames: torch.Tensor,
+        mask: Union["BlockMask", "AttentionBias", torch.Tensor, str],
+        cross_mask: torch.Tensor,
         patch_embeds: Optional[torch.Tensor] = None,
-        mask: Optional[Union["BlockMask", "AttentionBias", torch.Tensor, str]] = None,
-        cross_mask: Optional[torch.Tensor] = None,
         num_patches: Optional[int] = None,
         patch_ids: Optional[torch.Tensor] = None,
         cache: Optional[List[Tuple[torch.Tensor, torch.Tensor, int]]] = None,
     ):
         """ """
-        bs, seqlen = tokens.shape
-        if mask is None:
-            mask = create_causal_mask(
-                seqlen,
-                self.attn_impl,
-                "local_block_causal",
-                sliding_window=self.sliding_window,
-                tokens=tokens,
-                eos_id=self.eos_id,
-            )
+        bs, seqlen, channels = frames.shape
 
-        h = self.apply_embedding(tokens, embeds)
         freqs_cis = self.rope(seqlen=seqlen) if self.use_rope else None
-
-        h = F.dropout(h, p=self.dropout, training=self.training)
+        h = F.dropout(frames, p=self.dropout, training=self.training)
 
         for i, layer in enumerate(self.layers):
             h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.attn_impl)

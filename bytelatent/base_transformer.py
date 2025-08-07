@@ -41,6 +41,22 @@ class InitStdFactor(str, Enum):
     DIM_RATIO = "dim_ratio"  # Init std is divided by model_dim/4096
 
 
+class VisionModelArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    img_channels: int = 1
+    img_height: int = 64
+    img_width: int = 64
+    scale_factor: int = 2
+    inner_channels: int = 48
+    norm_channels: int = 4
+    num_process_layers: int = 2
+
+    tile_height: int = 4
+    tile_width: int = 4
+    patch_size: int = 4 # number of consecutive frames sharing the same tile
+
+
 class BaseTransformerArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dim: int = 512
@@ -48,6 +64,8 @@ class BaseTransformerArgs(BaseModel):
     head_dim: int | None = None
     n_heads: int | None = None
     n_kv_heads: int | None = None
+    
+    vision: VisionModelArgs = VisionModelArgs()
 
     ffn_dim_multiplier: float | None = None
 
@@ -123,6 +141,34 @@ def precompute_freqs_cis(
     return torch.stack((cos, -sin, sin, cos), dim=-1).view(*freqs.size(), 2, 2)
 
 
+def precompute_freqs_cis_nd(
+    channel_dims: list[int], 
+    feature_dim: int, 
+    max_seqlen: int, 
+    base: int
+):
+    k_max = feature_dim // (2 * len(channel_dims))
+    assert feature_dim % k_max == 0, f'shape[-1] ({feature_dim}) is not divisible by 2 * len(shape[:-1]) ({2 * len(channel_dims)})'
+
+    # tensor of angles to use
+    theta_ks = 1 / (base ** (torch.arange(k_max) / k_max))
+
+    # create a stack of angles multiplied by position
+    angles = torch.cat([
+        t.unsqueeze(-1) * theta_ks 
+        for t in torch.meshgrid([torch.arange(d) for d in channel_dims], indexing='ij')
+    ], dim=-1)
+
+    # convert to complex number to allow easy rotation
+    freqs_cis = torch.polar(torch.ones_like(angles), angles)
+
+    # reshape to flat
+    freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
+
+    return freqs_cis
+
+
+
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor, seq_dim: int):
     """
     Reshape frequency tensor for broadcasting it with another tensor.
@@ -165,6 +211,25 @@ def apply_rotary_emb(
     ).float()  # S D/2 2 2 -> 1 S 1 D/2 2 2
     xq_out = (xq_ * freqs_cis).sum(5).flatten(3)
     xk_out = (xk_ * freqs_cis).sum(5).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
+
+
+def apply_rotary_emb_nd(
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    seq_dim: int,
+    freqs_cis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    # convert input into complex numbers to perform rotation
+    xq_ = torch.view_as_complex(xq.reshape(*xq.shape[:-1], -1, 2))  # B S H D -> B S H D/2 2
+    xk_ = torch.view_as_complex(xk.reshape(*xk.shape[:-1], -1, 2))  # B S H D -> B S H D/2 2
+
+    freqs_cis = freqs_cis.view(1, freqs_cis.shape[0], 1, freqs_cis.shape[1])
+    
+    # apply RoPE
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(-2)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(-2)
+    
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
@@ -305,6 +370,64 @@ class RotaryEmbedding(torch.nn.Module):
             return self.freqs_cis[0:seqlen]
 
 
+class RotaryEmbeddingNd(torch.nn.Module):
+    """N-dimensional Rotary Positional Embedding."""
+    def __init__(
+        self, 
+        additional_dims, 
+        feature_dim, 
+        max_seqlen, 
+        base=10000, 
+        rope_use_fp32_in_outer_product=False
+    ):
+        super(RotaryEmbeddingNd, self).__init__()
+
+        self.channel_dims = [max_seqlen] + list(additional_dims)  # seqlen always expected to be first
+        self.feature_dim = feature_dim
+        self.max_seqlen = max_seqlen
+        self.base = base
+        self.rope_use_fp32_in_outer_product = rope_use_fp32_in_outer_product
+
+        # store in a buffer so it can be saved in model parameters
+        self.register_buffer(
+            "freqs_cis",
+            precompute_freqs_cis_nd(
+                self.channel_dims,
+                self.feature_dim,
+                self.max_seqlen,
+                self.base
+            ),
+            persistent=False,
+        )
+
+    def reset_parameters(self):
+        self.freqs_cis[...] = precompute_freqs_cis_nd(
+            self.channel_dims,
+            self.feature_dim,
+            self.max_seqlen,
+            self.base
+        )
+
+    def forward(
+        self, seqlen: Optional[int] = None, tok_idx: Optional[torch.Tensor] = None
+    ):
+        """
+        Return freqs_cis corresponding to consecutive seqlen positions or the corresponding tok_idx positions
+        Args:
+            seqlen (int): Contiguous sequence length
+            tok_idx (torch.Tensor[int]): Position indices of each token this overrides seqlen
+
+        Returns:
+            Tuple(torch.Tensor, torch.Tensor): Embedded input tensor and freqs_cis
+        """
+        test = (seqlen is not None) or (tok_idx is not None)
+        assert test, "Should provide atleast seqlen or tok_idx"
+        if tok_idx is not None:
+            return self.freqs_cis[tok_idx]
+        elif seqlen is not None:
+            return self.freqs_cis[0:seqlen]
+
+
 def _reshape_for_attn_bias(
     attn_bias: AttentionBias | None,
     *tensors: torch.Tensor,
@@ -378,7 +501,7 @@ class Attention(nn.Module):
         xk = xk.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
         xv = xv.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
 
-        xq, xk = apply_rotary_emb(xq, xk, 1, freq_cis[0:seq_len])
+        xq, xk = apply_rotary_emb_nd(xq, xk, 1, freq_cis[0:seq_len])
 
         # This condition helps us be easily compatible
         # with inference by adding a pluggable KVCache
@@ -588,10 +711,12 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         self.attn_bias_type = args.attn_bias_type
         self.init_std_factor = InitStdFactor(args.init_std_factor)
         self.max_seqlen = args.max_seqlen
-        self.rope_embeddings = RotaryEmbedding(
-            theta=args.rope_theta,
-            head_dim=args.head_dim or args.dim // args.n_heads,
+        
+        self.rope_embeddings = RotaryEmbeddingNd(
+            additional_dims=(args.vision.img_height // args.vision.scale_factor, args.vision.img_width // args.vision.scale_factor), 
+            feature_dim=args.head_dim or args.dim // args.n_heads, 
             max_seqlen=args.max_seqlen,
+            base=args.rope_theta,
             rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
         )
         self.eos_id = args.eos_id

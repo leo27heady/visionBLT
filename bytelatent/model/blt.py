@@ -402,6 +402,63 @@ def patch_ids_from_lengths(patch_lengths, seq_len):
     ), f"{torch.max(patch_ids)} > {patch_lengths.shape[-1]} or {torch.min(patch_ids)} < 0"
     return patch_ids
 
+def patch_ids_from_frames(
+    batch_size: int, 
+    num_frames: int, 
+    height: int, 
+    width: int,
+    tile_height: int, 
+    tile_width: int, 
+    patch_size: int, 
+    device: torch.device
+):
+    # During the explanation the 4x4 frame with tile 2x2 will and patch size 2 be used for illustration
+    # Compute how many tiles (patches) fit along each spatial axis
+    tiles_y = height // tile_height
+    tiles_x = width  // tile_width
+    patches_per_frame = tiles_y * tiles_x
+
+    # 1) Create a grid of patch indices
+    tile_grid = torch.arange(patches_per_frame, device=device).view(tiles_y, tiles_x)
+    # e.g. tile_grid = tensor([[0, 1],
+    #                          [2, 3]])
+
+    # 2) Expand each grid cell into a tile of size (tile_height x tile_width)
+    #    Result: a (height x width) map where each entry is its patch index
+    spatial_patch_map = (
+        tile_grid
+        .repeat_interleave(tile_height, dim=0)
+        .repeat_interleave(tile_width,  dim=1)
+    )
+    # spatial_patch_map.shape == (4, 4)
+    # spatial_patch_map =
+    # tensor([[0, 0, 1, 1],
+    #         [0, 0, 1, 1],
+    #         [2, 2, 3, 3],
+    #         [2, 2, 3, 3]])
+
+    # 3) Flatten the spatial map to shape (height*width,)
+    flat_patch_ids = spatial_patch_map.view(-1)
+
+    # 4) Compute a "group index" for each frame: 
+    frame_indices = torch.arange(num_frames, device=device)
+    group_index  = frame_indices // patch_size  # shape: (T,)
+    # [0//2, 1//2, 2//2, 3//2] = [0, 0, 1, 1]
+
+    # 5) For each frame, add an offset of (group_index x patches_per_frame)
+    #    to the base flat_patch_ids. Broadcasting yields shape (T, H*W)
+    ids_per_frame = flat_patch_ids[None, :] + group_index[:, None] * patches_per_frame
+
+    # 6) Reshape to a single vector per batch and repeat for all batches
+    #    Final shape: (batch_size, T * height * width)
+    return (
+        ids_per_frame
+        .reshape(-1)             # (T*H*W,)
+        .unsqueeze(0)            # (1, T*H*W)
+        .expand(batch_size, -1)  # (B, T*H*W)
+        .to(device)
+    )
+
 
 class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Basic model configuration
@@ -597,6 +654,7 @@ def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransfor
 def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
     local_encoder_args = LocalModelArgs(
         # Updated args
+        vision=args.vision,
         dim=args.dim_local_encoder,
         n_layers=args.n_layers_local_encoder,
         n_heads=args.n_heads_local_encoder,
@@ -640,6 +698,7 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
 def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
     # First deep copy the original args
     local_decoder_args = LocalModelArgs(
+        vision=args.vision,
         dim=args.dim_local_decoder,
         n_layers=args.n_layers_local_decoder,
         n_heads=args.n_heads_local_decoder,

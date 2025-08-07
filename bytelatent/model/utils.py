@@ -122,6 +122,65 @@ def tokens_to_seqlen(batch: torch.Tensor, eos_id: int):
     return [int(col[0].item() + 1)] + seqlens.tolist()
 
 
+def create_vision_causal_mask(
+    seqlen,
+    frame_elements,
+    attn_impl: str,
+    attn_bias_type: str | None,
+    *,
+    eos_id: int | None = None,
+    tokens: torch.Tensor | None = None,
+    sliding_window: int | None = None,
+):
+    # if attn_impl == "xformers":
+    #     if attn_bias_type is None:
+    #         return fmha.attn_bias.LowerTriangularMask()
+    #     elif attn_bias_type == "causal":
+    #         assert sliding_window is None
+    #         return fmha.attn_bias.LowerTriangularMask()
+    #     elif attn_bias_type == "block_causal":
+    #         assert sliding_window is None
+    #         assert eos_id is not None
+    #         assert tokens is not None
+    #         return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
+    #             q_seqlen=tokens_to_seqlen(tokens, eos_id)
+    #         )
+    #     elif attn_bias_type == "local_block_causal":
+    #         assert sliding_window is not None
+    #         assert eos_id is not None
+    #         assert tokens is not None
+    #         return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
+    #             q_seqlen=tokens_to_seqlen(tokens, eos_id)
+    #         ).make_local_attention(sliding_window)
+    #     else:
+    #         return fmha.attn_bias.LocalAttentionFromBottomRightMask(
+    #             window_left=sliding_window - 1, window_right=0
+    #         )
+    if attn_impl == "sdpa":
+        BLT_SUPPRESS_ATTN_ERROR = int(os.environ.get("BLT_SUPPRESS_ATTN_ERROR", 0))
+
+        if attn_bias_type == "causal":
+            mask_causal_frames = torch.full((seqlen, seqlen), fill_value=False)
+            for i in range(0, seqlen, frame_elements):
+                mask_causal_frames[i : i+frame_elements, :i+frame_elements] = True
+            return mask_causal_frames
+
+        if BLT_SUPPRESS_ATTN_ERROR == 1:
+            return "causal"
+        else:
+            raise ValueError(
+                "SDPA attention being used, which doesn't have specialized attention implementations for block_causal and local_block_causal attention. To suppress this error and run the model anyway, set the environment variable BLT_SUPPRESS_ATTN_ERROR=1"
+            )
+    # elif attn_impl == "flex_attention":
+    #     return create_block_mask(causal_mask, None, None, seqlen, seqlen)
+    elif attn_impl == "fmha":
+        return None
+    else:
+        raise NotImplementedError(
+            f"Attention {attn_impl} with {sliding_window} sliding window not implemented"
+        )
+
+
 def create_causal_mask(
     seqlen,
     attn_impl: str,
