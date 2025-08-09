@@ -48,13 +48,13 @@ class VisionModelArgs(BaseModel):
     img_height: int = 64
     img_width: int = 64
     scale_factor: int = 2
-    inner_channels: int = 48
     norm_channels: int = 4
     num_process_layers: int = 2
 
     tile_height: int = 4
     tile_width: int = 4
-    patch_size: int = 4 # number of consecutive frames sharing the same tile
+
+    pixel_vocab_size: int = 256
 
 
 class BaseTransformerArgs(BaseModel):

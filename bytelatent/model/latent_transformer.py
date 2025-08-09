@@ -173,31 +173,17 @@ class GlobalTransformer(BaseTransformer):
 
     def forward(
         self,
-        tokens: torch.Tensor,
+        embeds: torch.Tensor,
+        mask: Union[BlockMask, AttentionBias, torch.Tensor, str],
         tok_idx: Optional[torch.Tensor] = None,
-        embeds: Optional[torch.Tensor] = None,
-        mask: Optional[Union[BlockMask, AttentionBias, torch.Tensor, str]] = None,
         cache: Optional[List[Tuple[torch.Tensor, torch.Tensor, int]]] = None,
     ):
         """
         Similar to BaseTransformer.forward, but with an additional embeds argument
         and projection to the token space.
         """
-        bs, seqlen = tokens.shape
-
+        bs, seqlen, features = embeds.shape
         h = embeds
-
-        mask = (
-            mask
-            if mask is not None
-            else create_causal_mask(
-                seqlen,
-                self.attn_impl,
-                self.attn_bias_type,
-                tokens=tokens,
-                eos_id=self.eos_id,
-            )
-        )
 
         if self.token_embedding_projection is not None and h.shape[-1] != self.dim:
             h = self.token_embedding_projection(h)

@@ -208,22 +208,21 @@ class LocalEncoder(LocalModelBase):
         self.cross_attn_all_layers_encoder = args.cross_attn_all_layers_encoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
         self.cross_attn_nheads = args.cross_attn_nheads
-        self.inner_channels = args.vision.inner_channels
 
         # Image encoder
         self.image_encoder = nn.Sequential(
             # Prepare channels
-            nn.Conv2d(args.vision.img_channels, args.vision.inner_channels, kernel_size=3, padding=(1, 1)),
+            nn.Conv2d(args.vision.img_channels, self.dim, kernel_size=3, padding=(1, 1)),
             
             # Process image
             nn.Sequential(
-                nn.GroupNorm(args.vision.norm_channels, args.vision.inner_channels),
+                nn.GroupNorm(args.vision.norm_channels, self.dim),
                 nn.SiLU(),
-                nn.Conv2d(args.vision.inner_channels, args.vision.inner_channels, kernel_size=3, stride=1, padding=1),
+                nn.Conv2d(self.dim, self.dim, kernel_size=3, stride=1, padding=1),
             ),
 
             # Downsample 2x
-            nn.Conv2d(args.vision.inner_channels, args.vision.inner_channels, 4, 2, 1)
+            nn.Conv2d(self.dim, self.dim, 4, 2, 1)
         )
 
         # Cross-attention
@@ -306,9 +305,9 @@ class LocalDecoder(LocalModelBase):
         self.cross_attn_all_layers_decoder = args.cross_attn_all_layers_decoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
         self.cross_attn_nheads = args.cross_attn_nheads
+        self.vision = args.vision
 
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
-
+        # Cross-attention
         if self.cross_attn_decoder:
             self.cross_attn_layers = torch.nn.ModuleList()
             layers_to_add = args.n_layers if self.cross_attn_all_layers_decoder else 1
@@ -323,38 +322,38 @@ class LocalDecoder(LocalModelBase):
                     )
                 )
 
+        # Image encoder
+        self.image_decoder = nn.Sequential(
+            # Process image
+            nn.Sequential(
+                nn.GroupNorm(args.vision.norm_channels, self.dim),
+                nn.SiLU(),
+                nn.Conv2d(self.dim, self.dim, kernel_size=3, stride=1, padding=1),
+            ),
+
+            # Upsample 2x
+            nn.ConvTranspose2d(self.dim, self.dim, 4, 2, 1)
+        )
+
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.output = nn.Linear(
             self.dim,
-            args.vocab_size,
+            args.vision.pixel_vocab_size,
             bias=False,
         )
 
     def forward(
         self,
-        tokens: torch.Tensor,
-        embeds: Optional[torch.Tensor],
-        patch_embeds: Optional[torch.Tensor] = None,
-        mask: Optional[Union["BlockMask", "AttentionBias", torch.Tensor, str]] = None,
-        cross_mask: Optional[torch.Tensor] = None,
+        embeds: torch.Tensor,
+        patch_embeds: torch.Tensor,
+        mask: Union["BlockMask", "AttentionBias", torch.Tensor, str],
+        cross_mask: torch.Tensor,
         cache: Optional[List[Tuple[torch.Tensor, torch.Tensor, int]]] = None,
     ):
-        bs, seqlen = tokens.shape
-        assert embeds is not None, "Embeddings must be provided"
-
-        if mask is None:
-            mask = create_causal_mask(
-                seqlen,
-                self.attn_impl,
-                "local_block_causal",
-                sliding_window=self.sliding_window,
-                tokens=tokens,
-                eos_id=self.eos_id,
-            )
-
+        bs, seqlen, channels = embeds.shape
         h = embeds
 
         if self.patch_embedding_projection is not None:
-            assert patch_embeds is not None, "Patch embeddings must be passed."
             patch_embeds = self.patch_embedding_projection(patch_embeds)
             if self.cross_attn_k is not None:
                 patch_embeds = patch_embeds.reshape(
@@ -380,6 +379,13 @@ class LocalDecoder(LocalModelBase):
                 h = h + h_cross
 
             h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.attn_impl)
+
+        latent_frame_height = self.vision.img_height // self.vision.scale_factor
+        latent_frame_width = self.vision.img_width // self.vision.scale_factor
+        latent_frames = h.reshape(-1, latent_frame_height, latent_frame_width, self.dim).permute(0, 3, 1, 2)
+
+        frames_features = self.image_decoder(latent_frames)
+        h = frames_features.permute(0, 2, 3, 1).reshape(bs, -1, self.dim)
 
         h_preds = self.norm(h)
         h_preds = F.dropout(h_preds, p=self.dropout, training=self.training)

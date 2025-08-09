@@ -410,7 +410,9 @@ def patch_ids_from_frames(
     tile_height: int, 
     tile_width: int, 
     patch_size: int, 
-    device: torch.device
+    device: torch.device,
+    skip_from_start: int = 0,
+    skip_from_end: int = 0
 ):
     # During the explanation the 4x4 frame with tile 2x2 will and patch size 2 be used for illustration
     # Compute how many tiles (patches) fit along each spatial axis
@@ -442,7 +444,17 @@ def patch_ids_from_frames(
 
     # 4) Compute a "group index" for each frame: 
     frame_indices = torch.arange(num_frames, device=device)
-    group_index  = frame_indices // patch_size  # shape: (T,)
+    
+    if skip_from_start:
+        frame_indices[skip_from_start:] = (frame_indices[skip_from_start:] + (skip_from_start * (patch_size - 1))) // patch_size
+        group_index = frame_indices
+    elif skip_from_end:
+        group_index  = frame_indices // patch_size  # shape: (T,)
+        for i in range(skip_from_end, 0, -1):
+            group_index[-i:] += 1
+    else:
+        group_index  = frame_indices // patch_size  # shape: (T,)
+    # print(group_index)
     # [0//2, 1//2, 2//2, 3//2] = [0, 0, 1, 1]
 
     # 5) For each frame, add an offset of (group_index x patches_per_frame)
@@ -457,6 +469,7 @@ def patch_ids_from_frames(
         .unsqueeze(0)            # (1, T*H*W)
         .expand(batch_size, -1)  # (B, T*H*W)
         .to(device)
+        .to(torch.int64)
     )
 
 
