@@ -305,7 +305,6 @@ class LocalDecoder(LocalModelBase):
         self.cross_attn_all_layers_decoder = args.cross_attn_all_layers_decoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
         self.cross_attn_nheads = args.cross_attn_nheads
-        self.vision = args.vision
 
         # Cross-attention
         if self.cross_attn_decoder:
@@ -335,11 +334,15 @@ class LocalDecoder(LocalModelBase):
             nn.ConvTranspose2d(self.dim, self.dim, 4, 2, 1)
         )
 
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.output = nn.Linear(
-            self.dim,
-            args.vision.pixel_vocab_size,
-            bias=False,
+        # Head
+        self.head = nn.Sequential(
+            RMSNorm(args.dim, eps=args.norm_eps),
+            nn.Dropout1d(self.dropout),
+            nn.Linear(
+                self.dim,
+                args.vision.pixel_vocab_size,
+                bias=False,
+            )
         )
 
     def forward(
@@ -380,15 +383,4 @@ class LocalDecoder(LocalModelBase):
 
             h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.attn_impl)
 
-        latent_frame_height = self.vision.img_height // self.vision.scale_factor
-        latent_frame_width = self.vision.img_width // self.vision.scale_factor
-        latent_frames = h.reshape(-1, latent_frame_height, latent_frame_width, self.dim).permute(0, 3, 1, 2)
-
-        frames_features = self.image_decoder(latent_frames)
-        h = frames_features.permute(0, 2, 3, 1).reshape(bs, -1, self.dim)
-
-        h_preds = self.norm(h)
-        h_preds = F.dropout(h_preds, p=self.dropout, training=self.training)
-        h_preds = self.output(h_preds)
-        h_preds = h_preds.float()
-        return h_preds, cache
+        return h, cache
