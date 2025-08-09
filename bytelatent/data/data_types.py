@@ -3,6 +3,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+import torch
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
@@ -44,6 +45,21 @@ class BltSequence(BaseModel):
     tokens: list[int]
     mask: list[bool]
     patch_lengths: list[int] | None
+
+
+@dataclass
+class VisionBatch:
+    x: torch.Tensor
+    y: torch.Tensor
+    
+    batch_t: torch.Tensor
+    angles: torch.Tensor
+    temp_patterns: torch.Tensor
+
+    mask: np.ndarray | None = None
+    patch_lengths: np.ndarray | None = None
+    ngram_ids: np.ndarray | None = None
+    is_final: bool = False
 
 
 @dataclass

@@ -173,3 +173,4 @@ wandb/
 # *.ipynb
 hf-weights/
 alpaca-cleaned/
+simple-shape-dataset-toolbox/

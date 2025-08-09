@@ -6,6 +6,7 @@ from typing import Any, List, Optional, Tuple, Union
 import torch
 import torch.nn
 import torch.nn as nn
+from torchvision import transforms
 from pydantic import ConfigDict
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
@@ -211,6 +212,9 @@ class LocalEncoder(LocalModelBase):
 
         # Image encoder
         self.image_encoder = nn.Sequential(
+            # Preprocess
+            transforms.Normalize(mean=[0.5, ], std=[0.5, ]),
+
             # Prepare channels
             nn.Conv2d(args.vision.img_channels, self.dim, kernel_size=3, padding=(1, 1)),
             

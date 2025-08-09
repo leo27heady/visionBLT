@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import logging
 import os
+from enum import Enum
 from typing import Any
 
 import numpy as np
@@ -296,6 +297,34 @@ class EvalArgs(BaseModel):
     consolidate_folder: str = CONSOLIDATE_FOLDER
 
 
+class TemporalPatterns(Enum):
+    ACCELERATION = "ACCELERATION"
+    DECELERATION = "DECELERATION"
+    OSCILLATION = "OSCILLATION"
+    INTERRUPTION = "INTERRUPTION"
+
+class IntervalModel(BaseModel):
+    min: int
+    max: int
+
+class DataConfig(BaseModel):
+    gradual_complexity: list[float] | None = [0.2, 0.4, 0.1, 0.1, 0.2]  # Must be 1 in sum, and length equal to the time_to_pred.max - time_to_pred.min + 1
+    temporal_patterns: list[TemporalPatterns] = []
+    min_patterns: int = 0
+    pattern_combining: bool = False
+    render_window_size: int = 64
+    im_channels: int = 3
+    context_size: int = 12
+    batch_size: int = 8
+    time_to_pred: IntervalModel = IntervalModel(min=1, max=5)
+
+    angle: IntervalModel = IntervalModel(min=5, max=20)  # Greater than 0
+    acceleration_hundredth: IntervalModel = IntervalModel(min=3, max=6)
+    oscillation_period: IntervalModel = IntervalModel(min=1, max=4)
+    interruption_period: IntervalModel = IntervalModel(min=1, max=4)
+
+
+
 class TrainArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = "lingua"
@@ -318,6 +347,7 @@ class TrainArgs(BaseModel):
     # useful for debugging
     max_steps: int | None = None
 
+    shape_data: DataConfig = DataConfig()
     data: DataloaderArgs = DataloaderArgs()
     optim: OptimArgs = OptimArgs()
     model: ByteLatentTransformerArgs | None = ByteLatentTransformerArgs()
