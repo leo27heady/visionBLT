@@ -47,12 +47,14 @@ class VisionModelArgs(BaseModel):
     img_channels: int = 1
     img_height: int = 64
     img_width: int = 64
-    scale_factor: int = 2
     norm_channels: int = 4
     num_process_layers: int = 2
 
     tile_height: int = 4
     tile_width: int = 4
+
+    latent_height: int = 32
+    latent_width: int = 32
 
     pixel_vocab_size: int = 256
 
@@ -161,9 +163,11 @@ def precompute_freqs_cis_nd(
 
     # convert to complex number to allow easy rotation
     freqs_cis = torch.polar(torch.ones_like(angles), angles)
+    logger.debug(f"freqs_cis before reshape={freqs_cis.shape}")
 
     # reshape to flat
     freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
+    logger.debug(f"freqs_cis after reshape={freqs_cis.shape}")
 
     return freqs_cis
 
@@ -710,10 +714,14 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         self.attn_impl = args.attn_impl
         self.attn_bias_type = args.attn_bias_type
         self.init_std_factor = InitStdFactor(args.init_std_factor)
-        self.max_seqlen = args.max_seqlen
+        self.max_vision_seqlen = args.max_seqlen * args.vision.latent_height * args.vision.latent_width
         
+        logger.debug(f"args.vision.latent_height={args.vision.latent_height}")
+        logger.debug(f"args.latent_width.latent_height={args.vision.latent_width}")
+        logger.debug(f"feature_dim={args.head_dim or args.dim // args.n_heads}")
+        logger.debug(f"max_seqlen={args.max_seqlen}")
         self.rope_embeddings = RotaryEmbeddingNd(
-            additional_dims=(args.vision.img_height // args.vision.scale_factor, args.vision.img_width // args.vision.scale_factor), 
+            additional_dims=(args.vision.latent_height, args.vision.latent_width), 
             feature_dim=args.head_dim or args.dim // args.n_heads, 
             max_seqlen=args.max_seqlen,
             base=args.rope_theta,
@@ -736,7 +744,7 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         attn_impl: str = "sdpa",
     ):
 
-        freq_cis = self.rope_embeddings(seqlen=self.max_seqlen, tok_idx=tok_idx)
+        freq_cis = self.rope_embeddings(seqlen=self.max_vision_seqlen, tok_idx=tok_idx)
 
         for i, layer in enumerate(self.layers):
             h = layer(h, freq_cis, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)

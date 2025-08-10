@@ -176,7 +176,7 @@ class ShapeDataset:
             self.current_steps += 1
 
             yield VisionBatch(
-                x=torch.stack(batch_images_x),
+                x=torch.stack(batch_images_x).to(torch.float32),
                 y=torch.stack(batch_images_y),
                 batch_t=torch.arange(start=1, end=current_batch_time + 1).to(device=self.device),
                 angles=torch.stack(batch_angles).to(device=self.device),

@@ -1,5 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import logging
 from enum import Enum, auto
 from typing import Any, Optional
 
@@ -18,8 +19,11 @@ from bytelatent.base_transformer import (
 from bytelatent.data.patcher import Patcher, PatcherArgs
 from bytelatent.model.latent_transformer import GlobalTransformer
 from bytelatent.model.local_models import LocalDecoder, LocalEncoder, LocalModelArgs
-from bytelatent.model.utils import downsample
+from bytelatent.model.utils import downsample, create_vision_causal_mask
 from bytelatent.tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
+
+
+logger = logging.getLogger()
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -454,7 +458,7 @@ def patch_ids_from_frames(
             group_index[-i:] += 1
     else:
         group_index  = frame_indices // patch_size  # shape: (T,)
-    # print(group_index)
+    logger.debug(f"group_index={group_index}")
     # [0//2, 1//2, 2//2, 3//2] = [0, 0, 1, 1]
 
     # 5) For each frame, add an offset of (group_index x patches_per_frame)
@@ -646,9 +650,14 @@ class LocalDecoderArgs(ByteLatentTransformerArgs):
 
 
 def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransformer:
+    logger.debug(f"called create_global_transformer")
     global_args = args.model_copy(
         deep=True,
         update=dict(
+            vision=args.vision.model_copy(update=dict(
+                latent_height=args.vision.latent_height // args.vision.tile_height,
+                latent_width=args.vision.latent_width // args.vision.tile_width
+            ), deep=True),
             dim=args.dim_global,
             n_layers=args.n_layers_global,
             n_heads=args.n_heads_global,
@@ -665,6 +674,7 @@ def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransfor
 
 
 def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
+    logger.debug(f"called create_local_encoder")
     local_encoder_args = LocalModelArgs(
         # Updated args
         vision=args.vision,
@@ -709,6 +719,7 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
 
 
 def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
+    logger.debug(f"called create_local_decoder")
     # First deep copy the original args
     local_decoder_args = LocalModelArgs(
         vision=args.vision,
@@ -882,6 +893,7 @@ class ByteLatentTransformer(
         self.init_base_std = args.init_base_std
         self.init_std_factor = InitStdFactor(args.init_std_factor)
         self.max_seqlen = args.max_seqlen
+        self.vision = args.vision
 
         # Cross attention configuration
         self.cross_attn_encoder = args.cross_attn_encoder
@@ -891,59 +903,13 @@ class ByteLatentTransformer(
         self.cross_attn_window_decoder = args.cross_attn_window_decoder
         self.cross_attn_use_flex_attention = args.cross_attn_use_flex_attention
 
-        # Encoder hash configuration
-        self.encoder_hash_byte_group_size = args.encoder_hash_byte_group_size
-        self.encoder_hash_byte_group_vocab = args.encoder_hash_byte_group_vocab
-        self.encoder_hash_byte_group_nb_functions = (
-            args.encoder_hash_byte_group_nb_functions
-        )
-
         # ByteLatent modules
         self.local_encoder = create_local_encoder(args)
         self.global_transformer = create_global_transformer(args)
         self.local_decoder = create_local_decoder(args)
-        self.encoder_hash_tok_embedding = init_embeddings(
-            args,
-            EmbeddingType.HASH_TOK,
-            local_encoder_dim=self.local_encoder.dim,
-            encoder_hash_byte_group_size=self.encoder_hash_byte_group_size,
-        )
-        self.encoder_ngram_embedding = init_embeddings(
-            args,
-            EmbeddingType.NGRAM,
-            local_encoder_dim=self.local_encoder.dim,
-            encoder_hash_byte_group_size=None,
-        )
-
-        # Encoder ngram embedding tables
-        self.encoder_ngram_embedding = None
-        if args.encoder_enable_byte_ngrams:
-            self.encoder_ngram_embedding = nn.ModuleList()
-            assert args.ngram_vocab_sizes is not None
-            self.encoder_ngram_to_size = parse_ngram_to_size(
-                args.encoder_ngram_to_size_str
-            )
-            ngram_emb_dim = self.local_encoder.dim
-            for ngram_vocab_size in self.encoder_ngram_to_size.values():
-                self.encoder_ngram_embedding.append(
-                    nn.Embedding(ngram_vocab_size + OFFSET, ngram_emb_dim)
-                )
 
         # Output layer
-        assert args.vocab_size > 0, "vocab_size must be greater than 0"
-
-        # Patcher module
-        if args.patch_in_forward:
-            self.patcher = Patcher(
-                PatcherArgs(
-                    patch_size=args.patch_size,
-                    patching_mode=args.patching_mode,
-                    patching_threshold=args.patching_threshold,
-                    patching_threshold_add=args.patching_threshold_add,
-                    monotonicity=args.monotonicity,
-                    max_patch_length=args.max_patch_length,
-                )
-            )
+        assert args.vision.pixel_vocab_size > 0, "vocab_size must be greater than 0"
 
     def push_to_hub(self, *args, **kwargs):
         raise ValueError(
@@ -955,7 +921,7 @@ class ByteLatentTransformer(
 
     def forward(
         self,
-        tokens: torch.Tensor,
+        frames: torch.Tensor,
         patch_lengths: Optional[torch.Tensor] = None,
         ngram_ids: Optional[torch.Tensor] = None,
     ):
@@ -964,174 +930,173 @@ class ByteLatentTransformer(
             isinstance(ngram_ids, torch.Tensor) or ngram_ids is None
         ), f"ngram_ids must be a tensor or None, but was: {type(ngram_ids)}"
 
-        bs, N = tokens.shape  # Batch size and sequence length
 
-        # Get megabyte inputs
-        nb_boe = int(0 if self.patching_mode != "" else self.patch_size - 1)
-        local_encoder_tokens, _, local_decoder_tokens = get_blt_input(
-            tokens=tokens,
-            enforce_patch_size_multiple=False,
-            nb_boe=nb_boe,
+        ####################
+        #### PREPROCESS ####
+        ####################
+
+        batch_size, num_frames, channels, full_height, full_width = frames.shape
+        frames = frames.reshape(batch_size*num_frames, channels, full_height, full_width)
+        encoder_input = self.local_encoder.image_encoder(frames)
+
+        frame_height, frame_width = encoder_input.shape[2:]
+        patch_ids = patch_ids_from_frames(
+            batch_size=batch_size,
+            num_frames=num_frames,
+            height=frame_height,
+            width=frame_width,
+            tile_height=self.vision.tile_height, 
+            tile_width=self.vision.tile_width, 
             patch_size=self.patch_size,
-            boe_id=self.boe_id,
+            device=encoder_input.device,
+            skip_from_start=1
         )
 
-        # Patching
-        if patch_lengths is None:
-            assert (
-                getattr(self, "patcher", None) is not None
-            ), "Patcher not defined and no patch_lengths passed."
-            patch_lengths, tok_scores = self.patcher.patch(
-                local_encoder_tokens,
-                include_next_token=True,
-                threshold=self.patcher.threshold,
-            )
-        else:
-            if nb_boe > 0:
-                patch_lengths[:, 0] += nb_boe
+        encoder_input = encoder_input.permute(0, 2, 3, 1).reshape(batch_size, -1, self.local_encoder.dim)
+        logger.debug(f"encoder_input: {encoder_input.shape}")
 
-        assert torch.min(patch_lengths) >= 0
+        N = encoder_input.shape[1]
 
-        # Generate patch IDs from patch_lengths
-        patch_ids = patch_ids_from_lengths(
-            patch_lengths, local_encoder_tokens.shape[-1]
-        )
-        assert torch.max(patch_ids) + 1 <= torch.max(
-            (patch_lengths != 0).sum(dim=-1)
-        ), f"{torch.max(patch_ids) + 1} > {torch.max((patch_lengths != 0).sum(dim=-1))}"
+        patch_lengths = torch.unique(patch_ids[0], return_counts=True)[1].unsqueeze(dim=0).to(device="cuda", dtype=torch.float32)
+        logger.debug(f"patch_lengths: {patch_lengths.shape}")
 
-        cross_attn_mask_enc = None
-        # Cross-attention encoder
-        if self.cross_attn_encoder:
-            cross_attn_mask_enc = cross_attn_mask(
-                patch_ids,
-                patch_lengths,
-                N,
-                patches_as_queries=True,
-                cross_attn_k=self.cross_attn_k,
-                window=self.cross_attn_window_encoder,
-                block_mask=self.cross_attn_use_flex_attention,
-            )
 
-        # Hashing and embedding
-        local_encoder_embeds = compute_hash_embeddings(
-            local_encoder_tokens=local_encoder_tokens,
-            local_encoder=self.local_encoder,
-            encoder_hash_tok_embedding=self.encoder_hash_tok_embedding,
-            encoder_hash_byte_group_nb_functions=self.encoder_hash_byte_group_nb_functions,
-            encoder_hash_byte_group_size=self.encoder_hash_byte_group_size,
-            encoder_hash_byte_group_vocab=self.encoder_hash_byte_group_vocab,
-        )
+        #################
+        #### ENCODER ####
+        #################
 
-        # N-gram table embeddings
-        if self.encoder_ngram_embedding is not None:
-            assert ngram_ids is not None, "ngram_ids must be provided"
-            if local_encoder_embeds is None:
-                local_encoder_embeds = self.local_encoder.tok_embeddings(
-                    local_encoder_tokens
-                )
-            assert len(ngram_ids) == len(
-                self.encoder_ngram_embedding
-            ), f"ngram_ids.shape[0]={ngram_ids.shape[0]} versus len(encoder_ngram_embedding)={len(self.encoder_ngram_embedding)}, ngram_ids.shape={ngram_ids.shape}"
-            for i in range(ngram_ids.shape[0]):
-                ngram_embedding = self.encoder_ngram_embedding[i]
-                ngram_embeds = ngram_embedding(ngram_ids[i])
-                assert (
-                    local_encoder_embeds.shape == ngram_embeds.shape
-                ), f"Shape mismatch: {local_encoder_embeds.shape} vs {ngram_embeds.shape}, ngram_ids.shape={ngram_ids.shape}"
-                local_encoder_embeds = local_encoder_embeds + ngram_embeds
+        frame_elements = frame_height * frame_width
+        logger.debug(f"frame_elements: {frame_elements}")
 
-        # Local encoder
+        cross_attn_mask_enc = cross_attn_mask(
+            patch_ids,
+            patch_lengths,
+            N,
+            patches_as_queries=True,
+            cross_attn_k=self.cross_attn_k,
+            window=self.cross_attn_window_encoder,
+            block_mask=self.cross_attn_use_flex_attention,
+        ).to(device="cuda", dtype=torch.float32)
+        logger.debug(f"cross_attn_mask_enc: {cross_attn_mask_enc.shape}")
+
+        causal_mask_enc = create_vision_causal_mask(
+            patch_ids.shape[1],
+            frame_elements,
+            self.local_encoder.attn_impl,
+            "causal"
+        ).to(device="cuda", dtype=torch.float32)
+        logger.debug(f"causal_mask_enc: {causal_mask_enc.shape}")
+
         (h_encoder, h_cross), cache_encoder = self.local_encoder(
-            tokens=local_encoder_tokens,
-            embeds=local_encoder_embeds,
-            patch_embeds=None,
+            frames=encoder_input,
+            mask=causal_mask_enc,
             cross_mask=cross_attn_mask_enc,
+            patch_embeds=None,
             num_patches=patch_lengths.shape[1],
             patch_ids=patch_ids,
         )
+        logger.debug(f"h_encoder: {h_encoder.shape}")
+        logger.debug(f"h_cross: {h_cross.shape}")
 
-        # Downsampling
-        if not self.cross_attn_encoder:
-            assert (
-                patch_ids.shape[1] == h_encoder.shape[1]
-            ), f"{patch_ids.shape[1]} != {h_encoder.shape[1]}"
-            h = downsample(
-                h_encoder,
-                patch_lengths.shape[1],
-                patch_lengths,
-                patch_ids,
-                downsampling_by_pooling=self.downsampling_by_pooling,
-                patch_size=self.patch_size,
-            )
-        else:
-            # Reshape h_cross
-            h = h_cross.view(bs, patch_lengths.shape[1], -1)
 
-        # Global transformer
-        global_tokens = tokens.new(h.shape[0], h.shape[1]).fill_(self.boe_id)
-        rows, cols = torch.where(local_encoder_tokens == self.eos_id)
-        eos_patch_ids = patch_ids[rows, cols]
-        global_tokens[rows, eos_patch_ids] = self.eos_id
+        ################
+        #### GLOBAL ####
+        ################
+
+        # Reshape h_cross
+        h = h_cross.view(batch_size, patch_lengths.shape[1], -1)
+        logger.debug(f"Global transformer input shape: {h.shape}.")
+
+        tiles_y = frame_height // self.vision.tile_height
+        tiles_x = frame_width  // self.vision.tile_width
+        latent_frame_elements = tiles_y * tiles_x
+        logger.debug(f"latent_frame_elements: {latent_frame_elements}")
+
+        causal_mask_global = create_vision_causal_mask(
+            h.shape[1],
+            latent_frame_elements,
+            self.global_transformer.attn_impl,
+            "causal"
+        ).to(device="cuda", dtype=torch.float32)
+        logger.debug(f"causal_mask_global: {causal_mask_global.shape}")
 
         h, _ = self.global_transformer(
             embeds=h,
-            tokens=global_tokens,
+            mask=causal_mask_global
         )
+        logger.debug(f"Global transformer output shape: {h.shape}.")
+
+
+        #################
+        #### DECODER ####
+        #################
 
         # Unpatching
-        dec_embeds = h_encoder[:, nb_boe : nb_boe + N, :]
+        dec_embeds = h_encoder
+        logger.debug(f"Decoder embeddings `dec_embeds` shape: {dec_embeds.shape}.")
 
         # Generate decoder patch IDs
-        decoder_patch_ids = decoder_patch_ids_from_lengths(
-            patch_lengths, nb_boe, local_decoder_tokens.shape[-1]
+        decoder_patch_ids = patch_ids_from_frames(
+            batch_size=batch_size,
+            num_frames=num_frames,
+            height=frame_height,
+            width=frame_width,
+            tile_height=self.vision.tile_height, 
+            tile_width=self.vision.tile_width, 
+            patch_size=self.patch_size,
+            device=encoder_input.device,
+            skip_from_end=1
         )
-        assert (
-            torch.max(decoder_patch_ids) + 1 <= h.shape[1]
-        ), f"{torch.max(decoder_patch_ids) + 1} > {h.shape[1]}"
-        assert (
-            decoder_patch_ids.shape[1] == dec_embeds.shape[1]
-        ), f"{decoder_patch_ids.shape[1]} != {dec_embeds.shape[1]}"
+        decoder_patch_lengths = torch.unique(decoder_patch_ids[0], return_counts=True)[1].unsqueeze(dim=0).to(device="cuda")
+        logger.debug(f"Decoder patch IDs shape: {decoder_patch_ids.shape}.")
 
         # Cross-attention decoder
-        if not self.cross_attn_decoder:
-            h = torch.gather(
-                h, 1, decoder_patch_ids.unsqueeze(-1).expand(-1, -1, h.shape[-1])
-            )
-            cross_attn_mask_dec = None
-            assert local_decoder_tokens.shape == h.shape[:-1]
-        else:
-            cross_attn_mask_dec = cross_attn_mask(
-                decoder_patch_ids,
-                patch_lengths,
-                N,
-                patches_as_queries=False,
-                cross_attn_k=self.cross_attn_k,
-                window=self.cross_attn_window_decoder,
-                block_mask=self.cross_attn_use_flex_attention,
-            )
+        cross_attn_mask_dec = cross_attn_mask(
+            decoder_patch_ids,
+            decoder_patch_lengths,
+            N,
+            patches_as_queries=False,
+            cross_attn_k=self.cross_attn_k,
+            window=self.cross_attn_window_decoder,
+            block_mask=self.cross_attn_use_flex_attention,
+        ).to(device="cuda", dtype=torch.float32)
+        logger.debug(f"cross_attn_mask_dec: {cross_attn_mask_dec.shape}")
+
+        causal_mask_dec = create_vision_causal_mask(
+            decoder_patch_ids.shape[1],
+            frame_elements,
+            self.local_decoder.attn_impl,
+            "causal"
+        ).to(device="cuda", dtype=torch.float32)
+        logger.debug(f"causal_mask_dec: {causal_mask_dec.shape}")
 
         # Local decoder
-        output, _ = self.local_decoder(
+        decoder_output, _ = self.local_decoder(
             embeds=dec_embeds,
             patch_embeds=h,
-            tokens=local_decoder_tokens,
+            mask=causal_mask_dec,
             cross_mask=cross_attn_mask_dec,
         )
+        logger.debug(f"Decoder output shape: {decoder_output.shape}")
+
+
+        #####################
+        #### POSTPROCESS ####
+        #####################
+
+        latent_frames = decoder_output.reshape(batch_size*num_frames, frame_height, frame_width, self.local_decoder.dim).permute(0, 3, 1, 2)
+        logger.debug(f"latent_frames: {latent_frames.shape}")
+
+        frames_features = self.local_decoder.image_decoder(latent_frames)
+        frames_features = frames_features.permute(0, 2, 3, 1).reshape(batch_size, -1, self.local_decoder.dim)
+        logger.debug(f"frames_features: {frames_features.shape}")
+
+        output = self.local_decoder.head(frames_features)
+        logger.debug(f"output: {output.shape}")
+
         return output
 
     def init_weights(self):
         self.local_encoder.init_weights()
         self.global_transformer.init_weights()
         self.local_decoder.init_weights()
-
-        emb_std = self.local_encoder.dim ** (-0.5)
-        if self.encoder_hash_tok_embedding:
-            for emb in self.encoder_hash_tok_embedding:
-                nn.init.trunc_normal_(
-                    emb.weight,
-                    mean=0.0,
-                    std=emb_std,
-                    a=-3 * emb_std,
-                    b=3 * emb_std,
-                )

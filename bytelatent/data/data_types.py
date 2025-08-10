@@ -56,9 +56,9 @@ class VisionBatch:
     angles: torch.Tensor
     temp_patterns: torch.Tensor
 
-    mask: np.ndarray | None = None
-    patch_lengths: np.ndarray | None = None
-    ngram_ids: np.ndarray | None = None
+    mask: torch.Tensor | None = None
+    patch_lengths: torch.Tensor | None = None
+    ngram_ids: torch.Tensor | None = None
     is_final: bool = False
 
 

@@ -383,6 +383,10 @@ def check_model_value_range(
 
         if torch.isnan(param).any() or torch.isinf(param).any():
             logger.warning(f"Model parameter {name} contains NaN or Inf")
+        
+        if torch.is_complex(param):
+            logger.warning(f"Model parameter {name} is complex")
+            continue
 
         param_range = param.max() - param.min()
         param_std = param.std()

@@ -35,6 +35,7 @@ from bytelatent.data.iterators.multiprocess_iterator import (
     PersistType,
 )
 from bytelatent.data.iterators.packing_iterator import PackingIteratorState
+from bytelatent.data.shape_data_stream import ShapeDataset
 from bytelatent.distributed import (
     check_model_value_range,
     clean_env,
@@ -86,7 +87,7 @@ def flatten_dict(d, parent_key="", sep="_"):
 def get_iterator_state_name(iterator_state):
     if isinstance(iterator_state, MultiprocessIteratorState):
         return "multiprocess"
-    elif isinstance(iterator_state, PackingIteratorState):
+    elif isinstance(iterator_state, PackingIteratorState) or isinstance(iterator_state, ShapeDataset):
         return "packing"
     else:
         raise ValueError(f"Unsupported iterator to get name from: {iterator_state}")
@@ -97,9 +98,10 @@ def get_iterator_state_name(iterator_state):
 @dataclass
 class TrainState(Stateful):
     step: int  # Nb of steps taken by the optimizer
+    total_steps: int  # Nb of steps intended to be taken
     acc_step: int  # Nb of accumulation steps done since last optimizer step
     scheduler: lr_scheduler.LambdaLR
-    data_loader_state: MultiprocessIteratorState | PackingIteratorState
+    data_loader_state: MultiprocessIteratorState | PackingIteratorState | ShapeDataset
     scale: float = 1.0
     data_loader_class: str | None = None
 
@@ -282,7 +284,7 @@ def train(args: TrainArgs):
 
         # Once we shard the model on different gpus we can actually initialize the model
         # First we create empty tensors of the correct shapes
-        model = model.to_empty(device="cuda")
+        model = model.to_empty(device="cuda").to(dtype=torch.float32)
         # Then we init the model. Please make sure this function initializes *ALL* parameters
         # and buffers, otherwise you will have random values in the unitialized tensors
         # which will silently fail (give nan gradients for example)
@@ -316,13 +318,12 @@ def train(args: TrainArgs):
 
         # build optimizer after apply parallelisms to the model
         optimizer, scheduler = build_optimizer(model, args.optim, args.steps)
-        data_loader = args.data.build_from_rank(0, 1)
-        data_loader_state = data_loader.get_state()
 
         train_state = TrainState(
             step=0,
+            total_steps=args.steps,
             acc_step=0,
-            data_loader_state=data_loader_state,
+            data_loader_state=args.shape_data,
             scheduler=scheduler,
             scale=1.0,
         )
@@ -337,7 +338,7 @@ def train(args: TrainArgs):
         metric_logger = context_stack.enter_context(
             MetricLogger(os.path.join(args.dump_dir, "metrics.jsonl"), args, fs=dump_fs)
         )
-        data_loader = train_state.data_loader_state.build()
+        data_loader = ShapeDataset("cuda", args.shape_data, train_state.step, args.steps)
         batch_iterator = data_loader.create_iter()
 
         torch_profiler = context_stack.enter_context(
@@ -365,15 +366,14 @@ def train(args: TrainArgs):
             # print(batch)
             # print(f"batch.x.shape={batch.x.shape}, batch.y.shape={batch.y.shape}, batch.mask.shape={batch.mask.shape}, batch.patch_lengths.shape={batch.patch_lengths.shape}")
             
-            batch_x = torch.from_numpy(
-                batch.x,
-            ).cuda()
-            batch_y = torch.from_numpy(batch.y).cuda()
+            batch_x = batch.x.cuda()
+            batch_y = batch.y.cuda()
+            batch_y = batch_y.permute(0, 1, 3, 4, 2).reshape(batch_y.shape[0], -1)
             if batch.patch_lengths is None:
                 batch_patch_lengths = None
             else:
-                batch_patch_lengths = torch.from_numpy(batch.patch_lengths).cuda()
-            mask = None if batch.mask is None else torch.from_numpy(batch.mask).cuda()
+                batch_patch_lengths = batch.patch_lengths.cuda()
+            mask = None if batch.mask is None else batch.mask.cuda()
 
             if args.data.tokenizer_args.name in ["bytes", "blt"]:
                 n_bytes += batch_y.numel() if mask is None else mask.sum()
@@ -401,7 +401,7 @@ def train(args: TrainArgs):
             ngram_ids = (
                 None
                 if batch.ngram_ids is None
-                else torch.from_numpy(batch.ngram_ids).cuda()
+                else batch.ngram_ids.cuda()
             )
 
             if every_n_steps(train_state, args.gc_collect_freq, acc_step=0):
@@ -621,15 +621,15 @@ def train(args: TrainArgs):
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
             ) or every_n_steps(train_state, args.checkpoint.eval.every, acc_step=0):
-                if (
-                    args.data.load_async
-                    and args.data.async_persist_type == PersistType.EXACT
-                ):
-                    train_state.data_loader_state, data_loader, batch_iterator = (
-                        get_state_and_refresh(data_loader)
-                    )
-                else:
-                    train_state.data_loader_state = data_loader.get_state()
+                # if (
+                #     args.data.load_async
+                #     and args.data.async_persist_type == PersistType.EXACT
+                # ):
+                #     train_state.data_loader_state, data_loader, batch_iterator = (
+                #         get_state_and_refresh(data_loader)
+                #     )
+                # else:
+                #     train_state.data_loader_state = data_loader.get_state()
                 saved = checkpoint.save(
                     model,
                     optimizer,
@@ -671,15 +671,15 @@ def train(args: TrainArgs):
 
             if preemption_flag["flag"]:
                 if not saved:
-                    if (
-                        args.data.load_async
-                        and args.data.async_persist_type == PersistType.EXACT
-                    ):
-                        train_state.data_loader_state, data_loader, batch_iterator = (
-                            get_state_and_refresh(data_loader)
-                        )
-                    else:
-                        train_state.data_loader_state = data_loader.get_state()
+                    # if (
+                    #     args.data.load_async
+                    #     and args.data.async_persist_type == PersistType.EXACT
+                    # ):
+                    #     train_state.data_loader_state, data_loader, batch_iterator = (
+                    #         get_state_and_refresh(data_loader)
+                    #     )
+                    # else:
+                    #     train_state.data_loader_state = data_loader.get_state()
 
                     checkpoint.save(
                         model,
@@ -692,15 +692,15 @@ def train(args: TrainArgs):
                 sys.exit(0)
 
         if not saved:
-            if (
-                args.data.load_async
-                and args.data.async_persist_type == PersistType.EXACT
-            ):
-                train_state.data_loader_state, data_loader, batch_iterator = (
-                    get_state_and_refresh(data_loader)
-                )
-            else:
-                train_state.data_loader_state = data_loader.get_state()
+            # if (
+            #     args.data.load_async
+            #     and args.data.async_persist_type == PersistType.EXACT
+            # ):
+            #     train_state.data_loader_state, data_loader, batch_iterator = (
+            #         get_state_and_refresh(data_loader)
+            #     )
+            # else:
+            #     train_state.data_loader_state = data_loader.get_state()
             checkpoint.save(
                 model,
                 optimizer,

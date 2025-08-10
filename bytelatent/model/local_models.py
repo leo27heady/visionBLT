@@ -93,7 +93,7 @@ class LocalModelBase(nn.Module):
             self.pos_embeddings = nn.Embedding(args.max_length, args.dim)
         else:
             self.rope = RotaryEmbeddingNd(
-                additional_dims=(args.vision.img_height // args.vision.scale_factor, args.vision.img_width // args.vision.scale_factor), 
+                additional_dims=(args.vision.latent_height, args.vision.latent_width), 
                 feature_dim=args.head_dim or args.dim // args.n_heads, 
                 max_seqlen=args.max_seqlen,
                 base=args.rope_theta,
@@ -158,14 +158,14 @@ class LocalModelBase(nn.Module):
 
             layer.init_weights(None, factor)
 
-        if hasattr(self, "output"):
-            nn.init.trunc_normal_(
-                self.output.weight,
-                mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
-            )
+        if hasattr(self, "image_encoder"):
+            self.image_encoder.init_weights(init_std)
+
+        if hasattr(self, "image_decoder"):
+            self.image_decoder.init_weights(init_std)
+
+        if hasattr(self, "head"):
+            self.head.init_weights(init_std)
 
         if self.token_embedding_projection is not None:
             nn.init.trunc_normal_(
@@ -198,6 +198,80 @@ class LocalModelBase(nn.Module):
                 layer.init_weights(None, factor)
 
 
+class ConvolutionUnit(nn.Module):
+    def __init__(
+        self, 
+        in_channels: int, 
+        out_channels: int, 
+        kernel_size: int, 
+        stride: int, 
+        padding: int, 
+        norm_channels: int,
+        convolution_type: str = "down"
+    ):
+
+        super().__init__()
+
+        self.convolution = (nn.Conv2d if convolution_type == "down" else nn.ConvTranspose2d)(
+            in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=(padding, padding
+        ))
+        self.normalization = nn.GroupNorm(norm_channels, out_channels)
+        self.activation = nn.SiLU()
+    
+    def forward(self, imgs: torch.Tensor) -> torch.Tensor:
+        x = self.convolution(imgs)
+        x = self.normalization(x)
+        x = self.activation(x)
+        return x
+    
+    def init_weights(self, init_std):
+        nn.init.trunc_normal_(
+            self.convolution.weight,
+            mean=0.0,
+            std=init_std,
+            a=-3 * init_std,
+            b=3 * init_std,
+        )
+        self.normalization.reset_parameters()
+
+
+class ImageEncoder(nn.Module):
+    def __init__(self, args: LocalModelArgs):
+        super().__init__()
+
+        self.preprocessing = transforms.Normalize(mean=[0.5, ], std=[0.5, ])
+
+        # Prepare channel dim
+        self.prepare_dim = ConvolutionUnit(
+            in_channels=args.vision.img_channels, out_channels=args.dim, 
+            kernel_size=3, stride=1, padding=1, norm_channels=args.vision.norm_channels
+        )
+        
+        # Process image
+        self.process = ConvolutionUnit(
+            in_channels=args.dim, out_channels=args.dim, 
+            kernel_size=3, stride=1, padding=1, norm_channels=args.vision.norm_channels
+        )
+
+        # Downsample 2x
+        self.downsample = ConvolutionUnit(
+            in_channels=args.dim, out_channels=args.dim, 
+            kernel_size=4, stride=2, padding=1, norm_channels=args.vision.norm_channels
+        )
+    
+    def forward(self, imgs: torch.Tensor) -> torch.Tensor:
+        x = self.preprocessing(imgs)
+        x = self.prepare_dim(x)
+        x = self.process(x)
+        x = self.downsample(x)
+        return x
+    
+    def init_weights(self, init_std):
+        self.prepare_dim.init_weights(init_std)
+        self.process.init_weights(init_std)
+        self.downsample.init_weights(init_std)
+
+
 class LocalEncoder(LocalModelBase):
     def __init__(self, args: LocalModelArgs):
         super().__init__(args)
@@ -211,23 +285,7 @@ class LocalEncoder(LocalModelBase):
         self.cross_attn_nheads = args.cross_attn_nheads
 
         # Image encoder
-        self.image_encoder = nn.Sequential(
-            # Preprocess
-            transforms.Normalize(mean=[0.5, ], std=[0.5, ]),
-
-            # Prepare channels
-            nn.Conv2d(args.vision.img_channels, self.dim, kernel_size=3, padding=(1, 1)),
-            
-            # Process image
-            nn.Sequential(
-                nn.GroupNorm(args.vision.norm_channels, self.dim),
-                nn.SiLU(),
-                nn.Conv2d(self.dim, self.dim, kernel_size=3, stride=1, padding=1),
-            ),
-
-            # Downsample 2x
-            nn.Conv2d(self.dim, self.dim, 4, 2, 1)
-        )
+        self.image_encoder = ImageEncoder(args)
 
         # Cross-attention
         if self.cross_attn_encoder:
@@ -300,6 +358,65 @@ class LocalEncoder(LocalModelBase):
         return patch_embeds + patch_embeds_cross
 
 
+class ImageDecoder(nn.Module):
+    def __init__(self, args: LocalModelArgs):
+        super().__init__()
+
+        # Process image
+        self.process = ConvolutionUnit(
+            in_channels=args.dim, out_channels=args.dim, 
+            kernel_size=3, stride=1, padding=1, norm_channels=args.vision.norm_channels
+        )
+
+        # Upsample 2x
+        self.upsample = ConvolutionUnit(
+            in_channels=args.dim, out_channels=args.dim, 
+            kernel_size=4, stride=2, padding=1, norm_channels=args.vision.norm_channels,
+            convolution_type="up"
+        )
+    
+    def forward(self, imgs: torch.Tensor) -> torch.Tensor:
+        x = self.process(imgs)
+        x = self.upsample(x)
+        return x
+    
+    def init_weights(self, init_std):
+        self.process.init_weights(init_std)
+        self.upsample.init_weights(init_std)
+    
+
+class PredictionHead(nn.Module):
+    def __init__(self, args: LocalModelArgs):
+        super().__init__()
+
+        self.dropout = args.dropout
+
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.output = nn.Linear(
+            args.dim,
+            args.vision.pixel_vocab_size,
+            bias=False,
+        )
+    
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        h_preds = self.norm(h)
+        h_preds = F.dropout(h_preds, p=self.dropout, training=self.training)
+        h_preds = self.output(h_preds)
+        h_preds = h_preds.float()
+        return h_preds
+    
+    def init_weights(self, init_std):
+        self.norm.reset_parameters()
+        
+        nn.init.trunc_normal_(
+            self.output.weight,
+            mean=0.0,
+            std=init_std,
+            a=-3 * init_std,
+            b=3 * init_std,
+        )
+
+
 class LocalDecoder(LocalModelBase):
     def __init__(self, args: LocalModelArgs):
         super().__init__(args)
@@ -326,28 +443,10 @@ class LocalDecoder(LocalModelBase):
                 )
 
         # Image encoder
-        self.image_decoder = nn.Sequential(
-            # Process image
-            nn.Sequential(
-                nn.GroupNorm(args.vision.norm_channels, self.dim),
-                nn.SiLU(),
-                nn.Conv2d(self.dim, self.dim, kernel_size=3, stride=1, padding=1),
-            ),
-
-            # Upsample 2x
-            nn.ConvTranspose2d(self.dim, self.dim, 4, 2, 1)
-        )
+        self.image_decoder = ImageDecoder(args)
 
         # Head
-        self.head = nn.Sequential(
-            RMSNorm(args.dim, eps=args.norm_eps),
-            nn.Dropout1d(self.dropout),
-            nn.Linear(
-                self.dim,
-                args.vision.pixel_vocab_size,
-                bias=False,
-            )
-        )
+        self.head = PredictionHead(args)
 
     def forward(
         self,
