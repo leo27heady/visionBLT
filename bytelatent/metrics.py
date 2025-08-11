@@ -48,6 +48,7 @@ class WandbArgs(BaseModel):
 class LoggingArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     freq: int = 10  # Log every freq optimizer steps
+    img_freq: int = 20  # Save img results every freq optimizer steps
     acc_freq: int | None = None  # Log every acc_freq gradient accumulation steps
     wandb: WandbArgs | None = None
 

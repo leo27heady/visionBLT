@@ -2,6 +2,7 @@
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
 import gc
+from PIL import Image
 import logging
 import math
 import os
@@ -11,6 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from timeit import default_timer as timer
 from typing import Any, TypeVar
+from pathlib import Path
 
 import numpy as np
 import pyarrow
@@ -18,6 +20,7 @@ import torch
 import torch.distributed
 import torch.nn.functional
 import torch.nn.functional as F
+from torchvision.utils import save_image
 import wandb
 import xformers.profiler
 from torch.distributed._tensor import DTensor
@@ -87,7 +90,7 @@ def flatten_dict(d, parent_key="", sep="_"):
 def get_iterator_state_name(iterator_state):
     if isinstance(iterator_state, MultiprocessIteratorState):
         return "multiprocess"
-    elif isinstance(iterator_state, PackingIteratorState) or isinstance(iterator_state, ShapeDataset):
+    elif isinstance(iterator_state, PackingIteratorState):
         return "packing"
     else:
         raise ValueError(f"Unsupported iterator to get name from: {iterator_state}")
@@ -110,7 +113,7 @@ class TrainState(Stateful):
             "step": self.step,
             "acc_step": self.acc_step,
             "data_loader_state": self.data_loader_state.model_dump(),
-            "data_loader_class": get_iterator_state_name(self.data_loader_state),
+            "data_loader_class": "packing",  # get_iterator_state_name(self.data_loader_state),
             "scheduler": self.scheduler.state_dict(),
         }
 
@@ -217,6 +220,47 @@ def compute_loss(p, y, mask, scale):
         tok_loss = tok_loss * mask
         loss = tok_loss.sum() / (mask.sum() + 1e-6)
     return loss, tok_loss
+
+def sample_and_save(
+    x_pred: torch.Tensor, x_expected: torch.Tensor, 
+    num_samples: int, save_dir: Path, 
+    # time_to_pred: int, angles: torch.Tensor, temp_patterns: torch.Tensor
+) -> None:
+
+    batch, time, channels, height, width = x_pred.shape
+
+    # Directory to save the image series
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Randomly sample N indices from the batch dimension
+    indices = torch.randperm(batch)[:num_samples]
+
+    x_pred_sampled = x_pred[indices]  # Shape: [batch, time, channels, height, width]
+    x_expected_sampled = x_expected[indices]  # Shape: [batch, time, channels, height, width]
+
+    # Save the sampled image series
+    concat_image = torch.cat([x_expected_sampled, x_pred_sampled], dim=4)
+    for i, batch_idx in enumerate(indices):
+        series_dir = save_dir / f"batch_{batch_idx.item()}"
+        series_dir.mkdir(parents=True, exist_ok=True)
+
+        # with open(f"{series_dir}/metadata.json", "w", encoding="utf-8") as f:
+        #     json.dump(
+        #         {
+        #             "time_to_pred": time_to_pred,
+        #             "patterns": temp_patterns[batch_idx].detach().cpu().numpy().tolist(),
+        #             "angles": angles[batch_idx].detach().cpu().numpy().tolist(),
+        #         }, 
+        #         f, ensure_ascii=False, indent=4
+        #     )
+
+        for t in range(time):
+            # Save predicted image
+            save_path = series_dir / f"t{t:02d}.png"
+            Image.fromarray(concat_image[i, t].squeeze(dim=0).to("cpu", torch.uint8).numpy()).save(save_path, format=None)
+            # save_image(concat_image[i, t], save_path)  # With denormalization
+
+    logger.info(f"Saved {num_samples} image series in '{save_dir}'.")
 
 
 def train(args: TrainArgs):
@@ -366,6 +410,8 @@ def train(args: TrainArgs):
             # print(batch)
             # print(f"batch.x.shape={batch.x.shape}, batch.y.shape={batch.y.shape}, batch.mask.shape={batch.mask.shape}, batch.patch_lengths.shape={batch.patch_lengths.shape}")
             
+            batch_size, num_frames, channels, height, width = batch.x.shape
+            
             batch_x = batch.x.cuda()
             batch_y = batch.y.cuda()
             batch_y = batch_y.permute(0, 1, 3, 4, 2).reshape(batch_y.shape[0], -1)
@@ -413,8 +459,6 @@ def train(args: TrainArgs):
             data_load_time = round(timer() - data_load_start, 4)
             nwords_since_last_log += batch_x.numel()
 
-            bsz, seqlen = batch_y.shape
-
             # forward
             start_timer = torch.cuda.Event(enable_timing=True)
             end_timer = torch.cuda.Event(enable_timing=True)
@@ -438,6 +482,18 @@ def train(args: TrainArgs):
             loss.backward()
             # For logging we undo that scaling
             loss = loss.detach() * args.grad_acc_steps
+            
+            if every_n_steps(
+                train_state, args.logging.img_freq, acc_step=0
+            ):
+                pretty_name = f"step{train_state.step}-loss{str(loss.item()).replace(".", "_")}"
+                with torch.no_grad():
+                    sample_and_save(
+                        pred.argmax(dim=2, keepdim=True).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3).float(),
+                        batch.y.float(),
+                        num_samples=2,
+                        save_dir=Path(checkpoint.path) / Path("sample_images") / Path(pretty_name)
+                    )
 
             # Undo loss scaling so downstream down't need to worry about it
             step_losses.append((loss / train_state.scale).item())
@@ -498,7 +554,7 @@ def train(args: TrainArgs):
                     args.grad_acc_steps * train_state.step + train_state.acc_step
                 )
                 tokens_per_gpu = (
-                    total_acc_steps * args.data.batch_size * args.data.seq_len
+                    total_acc_steps * batch_size * num_frames * height * width
                 )
                 total_tokens = 1 * tokens_per_gpu
                 # This is an estimate and the correct values may change
@@ -638,36 +694,36 @@ def train(args: TrainArgs):
                     # device_mesh=world_mesh,
                 )
 
-            if args.eval is not None and every_n_steps(
-                train_state, args.checkpoint.eval.every, acc_step=0
-            ):
-                eval_args = args.eval
+            # if args.eval is not None and every_n_steps(
+            #     train_state, args.checkpoint.eval.every, acc_step=0
+            # ):
+            #     eval_args = args.eval
 
-                eval_args.global_step = train_state.step
-                eval_args.ckpt_dir = str(checkpoint.existing_saves[-1])
-                eval_args.dump_dir = os.path.join(
-                    args.dump_dir,
-                    "evals",
-                    EVAL_FOLDER_NAME.format(train_state.step),
-                )
-                eval_args.metric_log_dir = args.dump_dir
-                if args.async_eval_gpus is None:
-                    launch_eval(eval_args)
-                elif get_is_master():
-                    if wandb.run is not None and args.logging.wandb is not None:
-                        eval_args.wandb = deepcopy(args.logging.wandb)
-                    assert args.async_eval_gpus > 0
-                    logger.info(f"Launching evals on {args.async_eval_gpus} gpus")
-                    with clean_env():
-                        launch_job(
-                            StoolArgs(
-                                asdict(eval_args),
-                                script="apps.main.eval",
-                                copy_code=False,
-                                nodes=args.async_eval_gpus // 8,
-                                qos="lowest",
-                            )
-                        )
+            #     eval_args.global_step = train_state.step
+            #     eval_args.ckpt_dir = str(checkpoint.existing_saves[-1])
+            #     eval_args.dump_dir = os.path.join(
+            #         args.dump_dir,
+            #         "evals",
+            #         EVAL_FOLDER_NAME.format(train_state.step),
+            #     )
+            #     eval_args.metric_log_dir = args.dump_dir
+            #     if args.async_eval_gpus is None:
+            #         launch_eval(eval_args)
+            #     elif get_is_master():
+            #         if wandb.run is not None and args.logging.wandb is not None:
+            #             eval_args.wandb = deepcopy(args.logging.wandb)
+            #         assert args.async_eval_gpus > 0
+            #         logger.info(f"Launching evals on {args.async_eval_gpus} gpus")
+            #         with clean_env():
+            #             launch_job(
+            #                 StoolArgs(
+            #                     asdict(eval_args),
+            #                     script="apps.main.eval",
+            #                     copy_code=False,
+            #                     nodes=args.async_eval_gpus // 8,
+            #                     qos="lowest",
+            #                 )
+            #             )
 
             if preemption_flag["flag"]:
                 if not saved:
