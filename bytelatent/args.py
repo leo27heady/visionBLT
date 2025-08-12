@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict
+from shapekit import SceneType
 
 from bytelatent.checkpoint import CONSOLIDATE_FOLDER, CheckpointArgs
 from bytelatent.data.data_types import Batch
@@ -308,6 +309,10 @@ class IntervalModel(BaseModel):
     max: int
 
 class DataConfig(BaseModel):
+    scene_type: SceneType = SceneType.DIM_3
+    min_cubes: int = 2
+    max_cubes: int = 6
+
     gradual_complexity: list[float] | None = [0.2, 0.4, 0.1, 0.1, 0.2]  # Must be 1 in sum, and length equal to the time_to_pred.max - time_to_pred.min + 1
     temporal_patterns: list[TemporalPatterns] = []
     min_patterns: int = 0

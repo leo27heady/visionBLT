@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import sys
+import json
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -37,6 +38,7 @@ from bytelatent.data.iterators.multiprocess_iterator import (
     MultiprocessIteratorState,
     PersistType,
 )
+from bytelatent.data.patcher import entropy
 from bytelatent.data.iterators.packing_iterator import PackingIteratorState
 from bytelatent.data.shape_data_stream import ShapeDataset
 from bytelatent.distributed import (
@@ -222,9 +224,9 @@ def compute_loss(p, y, mask, scale):
     return loss, tok_loss
 
 def sample_and_save(
-    x_pred: torch.Tensor, x_expected: torch.Tensor, 
+    x_pred: torch.Tensor, x_expected: torch.Tensor, x_pred_entropy: torch.Tensor,
     num_samples: int, save_dir: Path, 
-    # time_to_pred: int, angles: torch.Tensor, temp_patterns: torch.Tensor
+    angles: torch.Tensor, 
 ) -> None:
 
     batch, time, channels, height, width = x_pred.shape
@@ -236,23 +238,25 @@ def sample_and_save(
     indices = torch.randperm(batch)[:num_samples]
 
     x_pred_sampled = x_pred[indices]  # Shape: [batch, time, channels, height, width]
-    x_expected_sampled = x_expected[indices]  # Shape: [batch, time, channels, height, width]
-
+    x_expected_sampled = x_expected[indices]
+    x_expected_sampled = x_expected[indices]
+    x_pred_entropy_sampled = x_pred_entropy[indices]
     # Save the sampled image series
-    concat_image = torch.cat([x_expected_sampled, x_pred_sampled], dim=4)
+    concat_image = torch.cat([x_expected_sampled, x_pred_sampled, x_pred_entropy_sampled], dim=4)
     for i, batch_idx in enumerate(indices):
         series_dir = save_dir / f"batch_{batch_idx.item()}"
         series_dir.mkdir(parents=True, exist_ok=True)
 
-        # with open(f"{series_dir}/metadata.json", "w", encoding="utf-8") as f:
-        #     json.dump(
-        #         {
-        #             "time_to_pred": time_to_pred,
-        #             "patterns": temp_patterns[batch_idx].detach().cpu().numpy().tolist(),
-        #             "angles": angles[batch_idx].detach().cpu().numpy().tolist(),
-        #         }, 
-        #         f, ensure_ascii=False, indent=4
-        #     )
+        with open(f"{series_dir}/metadata.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    # "time_to_pred": time_to_pred,
+                    # "patterns": temp_patterns[batch_idx].detach().cpu().numpy().tolist(),
+                    # "entropy": x_pred_entropy_sampled[i].detach().cpu().numpy().tolist(),
+                    "angles": angles[batch_idx].detach().cpu().numpy().tolist(),
+                }, 
+                f, ensure_ascii=False, indent=4
+            )
 
         for t in range(time):
             # Save predicted image
@@ -487,12 +491,19 @@ def train(args: TrainArgs):
                 train_state, args.logging.img_freq, acc_step=0
             ):
                 pretty_name = f"step{train_state.step}-loss{str(loss.item()).replace(".", "_")}"
+                
+                entropy_pred = entropy(pred).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3)
+                entropy_threshold = 6.0
+                entropy_pred = entropy_threshold - torch.clamp(entropy_pred, 0, entropy_threshold)  # Clamp and invert
+                entropy_pred = (entropy_pred / entropy_threshold) * 255.0  # Normalize to [0, 255]
                 with torch.no_grad():
                     sample_and_save(
                         pred.argmax(dim=2, keepdim=True).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3).float(),
                         batch.y.float(),
+                        entropy_pred.float(),
                         num_samples=2,
-                        save_dir=Path(checkpoint.path) / Path("sample_images") / Path(pretty_name)
+                        save_dir=Path(checkpoint.path) / Path("sample_images") / Path(pretty_name),
+                        angles=batch.angles,
                     )
 
             # Undo loss scaling so downstream down't need to worry about it

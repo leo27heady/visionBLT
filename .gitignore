@@ -174,3 +174,4 @@ wandb/
 hf-weights/
 alpaca-cleaned/
 simple-shape-dataset-toolbox/
+train_checkpoints*

@@ -5,7 +5,7 @@ import numpy as np
 from torchvision import transforms
 from torch.utils.data import IterableDataset
 from torch.utils.data import DataLoader
-from shapekit import Scene, SceneType, Random2DShapeCreator
+from shapekit import Scene, SceneType, Random2DShapeCreator, Random3DShapeCreator
 
 from bytelatent.args import DataConfig, TemporalPatterns, IntervalModel
 from bytelatent.data.data_types import VisionBatch
@@ -13,6 +13,9 @@ from bytelatent.data.data_types import VisionBatch
 
 class ShapeDataset:
     def __init__(self, device, config: DataConfig, start_step: int, steps: int):
+        self.shape_creator_2d = Random2DShapeCreator()
+        self.shape_creator_3d = Random3DShapeCreator(config.max_cubes, include_reflections=False)
+
         self.scale_factor = 1000
         self.device = device
         self.config = config
@@ -51,16 +54,20 @@ class ShapeDataset:
         return np.round(gray_img).astype(int)
 
     def create_iter(self):
-        triangle = Random2DShapeCreator().create_equilateral_triangle()
+        if self.config.scene_type == SceneType.DIM_2:
+            figure = self.shape_creator_2d.create_equilateral_triangle()
+        elif self.config.scene_type == SceneType.DIM_3:
+            figure, _ = self.shape_creator_3d.create_connected_cubes(self.config.min_cubes)
         
         scene = Scene(
-            triangle, SceneType.DIM_2, self.config.render_window_size,
+            figure, self.config.scene_type, self.config.render_window_size,
             bg_color="white", 
             mesh_color="black",
             show_edges=False,
             lighting=False,
             line_width=4.0,
-            fixed_camera_distance=2.7, 
+            distance_factor=1.0 if self.config.scene_type == SceneType.DIM_2 else 2.5,
+            fixed_camera_distance=2.7 if self.config.scene_type == SceneType.DIM_2 else None, 
             axis="z"
         )
         
@@ -81,29 +88,32 @@ class ShapeDataset:
             batch_images_x, batch_images_y, batch_angles, batch_temp_patterns = [], [], [], []
             for batch in range(self.config.batch_size):
                 
-                # Selected imperially to fit the triangle to the render window, should be adjusted carefully
-                base = random.randint(self.scale(0.5), self.scale(1)) / self.scale_factor
-                shift = random.randint(self.scale(-0.2), self.scale(base + 0.2)) / self.scale_factor
-                height = random.randint(self.scale(0.5), self.scale(1)) / self.scale_factor
-                figure = Random2DShapeCreator().create_triangle(base, shift, height)
+                if self.config.scene_type == SceneType.DIM_2:
+                    # Selected imperially to fit the triangle to the render window, should be adjusted carefully
+                    base = random.randint(self.scale(0.5), self.scale(1)) / self.scale_factor
+                    shift = random.randint(self.scale(-0.2), self.scale(base + 0.2)) / self.scale_factor
+                    height = random.randint(self.scale(0.5), self.scale(1)) / self.scale_factor
+                    figure = self.shape_creator_2d.create_triangle(base, shift, height)
+                elif self.config.scene_type == SceneType.DIM_3:
+                    num_blocks = random.randint(self.config.min_cubes, self.config.max_cubes)  # Randomly select the number of blocks
+                    figure, _ = self.shape_creator_3d.create_connected_cubes(num_blocks)
                 
                 # Prepare scene with the new figure, memory efficient - the scene remains the same
                 scene.prepare_scene(
                     figure,
                     bg_color="white", 
-                    mesh_color="black",
+                    mesh_color="black" if self.config.scene_type == SceneType.DIM_2 else "gray",
+                    lighting=False if self.config.scene_type == SceneType.DIM_2 else True,
                     show_edges=False,
-                    lighting=False,
                     line_width=4.0,
-                    distance_factor=1.0,
-                    fixed_camera_distance=2.7, 
+                    distance_factor=1.0 if self.config.scene_type == SceneType.DIM_2 else 2.5,
+                    fixed_camera_distance=2.7 if self.config.scene_type == SceneType.DIM_2 else None, 
                     axis="z"
                 )
-                figure.rotate_z(random.randint(0, self.scale(360)) / self.scale_factor, point=scene.center_of_mass, inplace=True)
                 scene.plotter.render()
 
-                angle = random.randint(self.scale(self.config.angle.min), self.scale(self.config.angle.max)) / self.scale_factor
-                step = random.choice((-angle, angle))
+                angle_gen = lambda: random.choice((-1, 1)) * random.randint(self.scale(self.config.angle.min), self.scale(self.config.angle.max)) / self.scale_factor
+                step = np.array([angle_gen(), angle_gen(), angle_gen()])  # x, y, z
 
                 selected_temporal_patterns = self.config.temporal_patterns.copy()
                 if TemporalPatterns.ACCELERATION in self.config.temporal_patterns and TemporalPatterns.DECELERATION in self.config.temporal_patterns:
@@ -127,7 +137,7 @@ class ShapeDataset:
                     )
                 
                 acceleration, deceleration, oscillation_period, interruption_period = 0.0, 0.0, 0.0, 0.0
-                step_swap = 0.0
+                step_swap = np.array([0.0, 0.0, 0.0])
                 
                 if TemporalPatterns.OSCILLATION in selected_temporal_patterns:
                     oscillation_period = random.choice(list(range(self.config.oscillation_period.min, self.config.oscillation_period.max + 1)))
@@ -141,12 +151,18 @@ class ShapeDataset:
                     step *= 1.5
                     deceleration = 1.0 + random.randint(self.scale(self.config.acceleration_hundredth.min * 2), self.scale(self.config.acceleration_hundredth.max * 2)) / (self.scale_factor * 100)
                     deceleration = 1 / deceleration
+                
+                # randomly disable rotations for the x and y axis
+                step[0] *= random.choice((0.0, 1.0))
+                step[1] *= random.choice((0.0, 1.0))
 
                 images, angles = [], []
                 for i in range(self.config.context_size + current_batch_time):
-                    if step != 0.0:
-                        figure.rotate_z(step, point=scene.center_of_mass, inplace=True)
-                        scene.plotter.render()
+                    if self.config.scene_type == SceneType.DIM_3:
+                        figure.rotate_x(step[0], point=scene.center_of_mass, inplace=True)
+                        figure.rotate_y(step[1], point=scene.center_of_mass, inplace=True)
+                    figure.rotate_z(step[2], point=scene.center_of_mass, inplace=True)
+                    scene.plotter.render()
 
                     image = np.array(scene.plotter.screenshot())
                     image = self.rgb2gray(image)
@@ -170,7 +186,7 @@ class ShapeDataset:
                 batch_images_x.append(batch_images[:-current_batch_time])
                 batch_images_y.append(batch_images[current_batch_time:])
 
-                batch_angles.append(torch.Tensor(angles))
+                batch_angles.append(torch.Tensor(np.array(angles)))
                 batch_temp_patterns.append(torch.Tensor([acceleration, deceleration, oscillation_period, interruption_period]))
             
             self.current_steps += 1

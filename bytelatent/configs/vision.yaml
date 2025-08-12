@@ -240,12 +240,15 @@ shape_data:
   interruption_period:
     max: 4
     min: 1
+  max_cubes: 6
+  min_cubes: 2
   min_patterns: 0
   oscillation_period:
     max: 4
     min: 1
   pattern_combining: false
   render_window_size: 64
+  scene_type: DIM_3
   temporal_patterns: []
   time_to_pred:
     max: 1
