@@ -160,7 +160,7 @@ def create_vision_causal_mask(
         BLT_SUPPRESS_ATTN_ERROR = int(os.environ.get("BLT_SUPPRESS_ATTN_ERROR", 0))
 
         if attn_bias_type == "causal":
-            mask_causal_frames = torch.full((seqlen, seqlen), fill_value=False)
+            mask_causal_frames = torch.full((seqlen, seqlen), fill_value=False, dtype=bool)
             for i in range(0, seqlen, frame_elements):
                 mask_causal_frames[i : i+frame_elements, :i+frame_elements] = True
             return mask_causal_frames

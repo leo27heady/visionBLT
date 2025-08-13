@@ -976,7 +976,7 @@ class ByteLatentTransformer(
             cross_attn_k=self.cross_attn_k,
             window=self.cross_attn_window_encoder,
             block_mask=self.cross_attn_use_flex_attention,
-        ).to(device="cuda", dtype=torch.float32)
+        ).to(device="cuda")
         logger.debug(f"cross_attn_mask_enc: {cross_attn_mask_enc.shape}")
 
         causal_mask_enc = create_vision_causal_mask(
@@ -984,7 +984,7 @@ class ByteLatentTransformer(
             frame_elements,
             self.local_encoder.attn_impl,
             "causal"
-        ).to(device="cuda", dtype=torch.float32)
+        ).to(device="cuda")
         logger.debug(f"causal_mask_enc: {causal_mask_enc.shape}")
 
         (h_encoder, h_cross), cache_encoder = self.local_encoder(
@@ -1017,7 +1017,7 @@ class ByteLatentTransformer(
             latent_frame_elements,
             self.global_transformer.attn_impl,
             "causal"
-        ).to(device="cuda", dtype=torch.float32)
+        ).to(device="cuda")
         logger.debug(f"causal_mask_global: {causal_mask_global.shape}")
 
         h, _ = self.global_transformer(
@@ -1059,7 +1059,7 @@ class ByteLatentTransformer(
             cross_attn_k=self.cross_attn_k,
             window=self.cross_attn_window_decoder,
             block_mask=self.cross_attn_use_flex_attention,
-        ).to(device="cuda", dtype=torch.float32)
+        ).to(device="cuda")
         logger.debug(f"cross_attn_mask_dec: {cross_attn_mask_dec.shape}")
 
         causal_mask_dec = create_vision_causal_mask(
@@ -1067,7 +1067,7 @@ class ByteLatentTransformer(
             frame_elements,
             self.local_decoder.attn_impl,
             "causal"
-        ).to(device="cuda", dtype=torch.float32)
+        ).to(device="cuda")
         logger.debug(f"causal_mask_dec: {causal_mask_dec.shape}")
 
         # Local decoder
