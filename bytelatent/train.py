@@ -114,7 +114,7 @@ class TrainState(Stateful):
         return {
             "step": self.step,
             "acc_step": self.acc_step,
-            "data_loader_state": self.data_loader_state.model_dump(),
+            "data_loader_state": self.data_loader_state.model_dump(mode="json"),
             "data_loader_class": "packing",  # get_iterator_state_name(self.data_loader_state),
             "scheduler": self.scheduler.state_dict(),
         }
