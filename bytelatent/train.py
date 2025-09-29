@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from timeit import default_timer as timer
 from typing import Any, TypeVar
 from pathlib import Path
+from skimage.metrics import structural_similarity as cal_ssim
 
 import numpy as np
 import pyarrow
@@ -226,7 +227,7 @@ def compute_loss(p, y, mask, scale):
 def sample_and_save(
     x_pred: torch.Tensor, x_expected: torch.Tensor, x_pred_entropy: torch.Tensor,
     num_samples: int, save_dir: Path, 
-    angles: torch.Tensor, 
+    angles: torch.Tensor, eval_res: dict
 ) -> None:
 
     batch, time, channels, height, width = x_pred.shape
@@ -253,6 +254,7 @@ def sample_and_save(
                     # "time_to_pred": time_to_pred,
                     # "patterns": temp_patterns[batch_idx].detach().cpu().numpy().tolist(),
                     # "entropy": x_pred_entropy_sampled[i].detach().cpu().numpy().tolist(),
+                    "eval": eval_res,
                     "angles": angles[batch_idx].detach().cpu().numpy().tolist(),
                 }, 
                 f, ensure_ascii=False, indent=4
@@ -266,6 +268,63 @@ def sample_and_save(
 
     logger.info(f"Saved {num_samples} image series in '{save_dir}'.")
 
+
+def RMSE(pred, true, spatial_norm=False):
+    if not spatial_norm:
+        return np.sqrt(np.mean((pred-true)**2, axis=(0, 1)).sum())
+    else:
+        norm = pred.shape[-1] * pred.shape[-2] * pred.shape[-3]
+        return np.sqrt(np.mean((pred-true)**2 / norm, axis=(0, 1)).sum())
+
+def MSE(pred, true, spatial_norm=False):
+    if not spatial_norm:
+        return np.mean((pred-true)**2, axis=(0, 1)).sum()
+    else:
+        norm = pred.shape[-1] * pred.shape[-2] * pred.shape[-3]
+        return np.mean((pred-true)**2 / norm, axis=(0, 1)).sum()
+
+
+def PSNR(pred, true, min_max_norm=False):
+    mse = np.mean((pred.astype(np.float32) - true.astype(np.float32))**2)
+    if mse == 0:
+        return float('inf')
+    else:
+        if min_max_norm:  # [0, 1] normalized by min and max
+            return 20. * np.log10(1. / np.sqrt(mse))  # i.e., -10. * np.log10(mse)
+        else:
+            return 20. * np.log10(255. / np.sqrt(mse))  # [-1, 1] normalized by mean and std
+
+
+def calculate_metrics(pred, true, spatial_norm=False) -> dict:
+    pred, true = pred.cpu().numpy(), true.cpu().numpy()
+    eval_res = {}
+    
+    # RMSE
+    eval_res['rmse'] = float(RMSE(pred, true, spatial_norm))
+    
+    # MSE
+    eval_res['mse'] = float(MSE(pred, true, spatial_norm))
+    
+    # SSIM
+    ssim = 0
+    for b in range(pred.shape[0]):
+        for f in range(pred.shape[1]):
+            ssim += cal_ssim(
+                pred[b, f].swapaxes(0, 2),
+                true[b, f].swapaxes(0, 2), 
+                channel_axis=2,
+                data_range=255.0
+            )
+    eval_res['ssim'] = float(ssim / (pred.shape[0] * pred.shape[1]))
+
+    # PSNR
+    psnr = 0
+    for b in range(pred.shape[0]):
+        for f in range(pred.shape[1]):
+            psnr += PSNR(pred[b, f], true[b, f])
+    eval_res['psnr'] = float(psnr / (pred.shape[0] * pred.shape[1]))
+
+    return eval_res
 
 def train(args: TrainArgs):
     with ExitStack() as context_stack:
@@ -493,17 +552,26 @@ def train(args: TrainArgs):
                 pretty_name = f"step{train_state.step}-loss{str(loss.item()).replace(".", "_")}"
                 
                 entropy_pred = entropy(pred).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3)
+                entropy_average = entropy_pred.mean()
                 entropy_threshold = 6.0
                 entropy_pred = entropy_threshold - torch.clamp(entropy_pred, 0, entropy_threshold)  # Clamp and invert
                 entropy_pred = (entropy_pred / entropy_threshold) * 255.0  # Normalize to [0, 255]
+
+                y_hat = pred.argmax(dim=2, keepdim=True).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3).float()
+                y = batch.y.float()
+                eval_res = calculate_metrics(y_hat, y)
+                eval_res["loss"] = float(loss.item())
+                eval_res["entropy"] = float(entropy_average.item())
+
                 with torch.no_grad():
                     sample_and_save(
-                        pred.argmax(dim=2, keepdim=True).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3).float(),
-                        batch.y.float(),
+                        y_hat,
+                        y,
                         entropy_pred.float(),
                         num_samples=2,
                         save_dir=Path(checkpoint.path) / Path("sample_images") / Path(pretty_name),
                         angles=batch.angles,
+                        eval_res=eval_res,
                     )
 
             # Undo loss scaling so downstream down't need to worry about it

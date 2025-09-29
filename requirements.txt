@@ -225,3 +225,4 @@ xyzservices==2025.4.0
 yarl==1.20.0
 zict==3.0.0
 zstandard==0.23.0
+scikit-image==0.25.2
