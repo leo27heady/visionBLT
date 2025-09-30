@@ -74,6 +74,10 @@ from bytelatent.transformer import (
     tp_parallelize,
 )
 
+from bytelatent.compare_models.vivit import ViViT
+from bytelatent.compare_models.unet_3d import UNet3D
+
+
 logger = logging.getLogger()
 
 T = TypeVar("T")
@@ -212,7 +216,7 @@ def every_n_steps(train_state, freq: int, acc_step=None, acc_freq=None):
     return test
 
 
-def compute_loss(p, y, mask, scale):
+def compute_ce_loss(p, y, mask, scale):
     tok_loss = scale * F.cross_entropy(
         p.flatten(0, 1), y.flatten(0, 1), reduction="none"
     )
@@ -224,8 +228,15 @@ def compute_loss(p, y, mask, scale):
         loss = tok_loss.sum() / (mask.sum() + 1e-6)
     return loss, tok_loss
 
+mse_loss = torch.nn.MSELoss()
+def compute_mse_loss(p, y, mask, scale):
+    loss = mse_loss(p, y)
+    tok_loss = loss.clone()
+    return loss, tok_loss
+
+
 def sample_and_save(
-    x_pred: torch.Tensor, x_expected: torch.Tensor, x_pred_entropy: torch.Tensor,
+    x_pred: torch.Tensor, x_expected: torch.Tensor, x_pred_entropy: torch.Tensor | None,
     num_samples: int, save_dir: Path, 
     angles: torch.Tensor, eval_res: dict
 ) -> None:
@@ -241,9 +252,8 @@ def sample_and_save(
     x_pred_sampled = x_pred[indices]  # Shape: [batch, time, channels, height, width]
     x_expected_sampled = x_expected[indices]
     x_expected_sampled = x_expected[indices]
-    x_pred_entropy_sampled = x_pred_entropy[indices]
     # Save the sampled image series
-    concat_image = torch.cat([x_expected_sampled, x_pred_sampled, x_pred_entropy_sampled], dim=4)
+    concat_image = torch.cat([x_expected_sampled, x_pred_sampled] + ([x_pred_entropy[indices]] if x_pred_entropy else []), dim=4)
     for i, batch_idx in enumerate(indices):
         series_dir = save_dir / f"batch_{batch_idx.item()}"
         series_dir.mkdir(parents=True, exist_ok=True)
@@ -373,9 +383,18 @@ def train(args: TrainArgs):
                 model_args = args.entropy_model
             else:
                 assert args.model is not None
-                model = ByteLatentTransformer(args.model)
                 model_args = args.model
-        logger.info("Model is built !")
+                if args.model.type_of_experiment in ["V-BLT", "V-BLT-MSE"]:
+                    model = ByteLatentTransformer(model_args)
+                elif args.model.type_of_experiment == "ViViT":
+                    model = ViViT(image_size=args.shape_data.render_window_size, patch_size=4, num_frames=args.shape_data.context_size, in_channels=1, dim=256)
+                elif args.model.type_of_experiment == "UNet3D":
+                    model = UNet3D(
+                        input_shape=None, n_features=1, base_width=32, encoder_blocks=None, decoder_blocks=None,
+                        feature_dilation=2, downsampling_stride=2, interpolation_mode="trilinear",
+                        # encoder_class=MyronenkoEncoder, decoder_class=None, n_outputs=1, layer_widths=None,
+                        decoder_mirrors_encoder=False, activation=None, use_transposed_convolutions=False, kernel_size=3
+                    )
 
         model_param_count = get_num_params(model)
 
@@ -408,7 +427,10 @@ def train(args: TrainArgs):
         else:
             with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
                 torch.manual_seed(model_args.seed)
-                model.init_weights()
+                if args.model.type_of_experiment in ["V-BLT", "V-BLT-MSE"]:
+                    model.init_weights()
+                else:
+                    model.apply(model._init_weights)
         check_model_value_range(model, range=10.0, std=1.0)
 
         # log model size
@@ -477,7 +499,11 @@ def train(args: TrainArgs):
             
             batch_x = batch.x.cuda()
             batch_y = batch.y.cuda()
-            batch_y = batch_y.permute(0, 1, 3, 4, 2).reshape(batch_y.shape[0], -1)
+            b, t, c, h, w = batch_x.shape
+            if args.model.type_of_experiment != "V-BLT":
+                batch_x = batch_x.float() / 255. # normalize(batch_x.reshape(b*t, c, h, w).float(), 0.5, 0.5).reshape(b, t, c, h, w)
+                batch_y = batch_y.float() / 255. # normalize(batch_y.reshape(b*t, c, h, w).float(), 0.5, 0.5).reshape(b, t, c, h, w)
+            
             if batch.patch_lengths is None:
                 batch_patch_lengths = None
             else:
@@ -534,7 +560,12 @@ def train(args: TrainArgs):
                     batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids
                 )
 
-            loss, tok_loss = compute_loss(pred, batch_y, mask, train_state.scale)
+            if args.model.type_of_experiment == "V-BLT":
+                batch_y = batch_y.permute(0, 1, 3, 4, 2).reshape(batch_y.shape[0], -1)
+                loss, tok_loss = compute_ce_loss(pred, batch_y, mask, train_state.scale)
+            else:
+                loss, tok_loss = compute_mse_loss(pred, batch_y, mask, train_state.scale)
+            
             # print(f"loss={loss}, tok_loss={tok_loss}")
 
             # We scale loss with grad_acc_steps so the gradient is the same
@@ -551,23 +582,29 @@ def train(args: TrainArgs):
             ):
                 pretty_name = f"step{train_state.step}-loss{str(loss.item()).replace(".", "_")}"
                 
-                entropy_pred = entropy(pred).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3)
-                entropy_average = entropy_pred.mean()
-                entropy_threshold = 6.0
-                entropy_pred = entropy_threshold - torch.clamp(entropy_pred, 0, entropy_threshold)  # Clamp and invert
-                entropy_pred = (entropy_pred / entropy_threshold) * 255.0  # Normalize to [0, 255]
+                eval_res = {}
+                entropy_pred = None
+                if args.model.type_of_experiment == "V-BLT":
+                    entropy_pred = entropy(pred).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3)
+                    entropy_average = entropy_pred.mean()
+                    entropy_threshold = 6.0
+                    entropy_pred = entropy_threshold - torch.clamp(entropy_pred, 0, entropy_threshold)  # Clamp and invert
+                    entropy_pred = ((entropy_pred / entropy_threshold) * 255.0).float()  # Normalize to [0, 255]
 
-                y_hat = pred.argmax(dim=2, keepdim=True).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3).float()
+                    eval_res["entropy"] = float(entropy_average.item())
+                    y_hat = pred.argmax(dim=2, keepdim=True).reshape(batch_size, num_frames, height, width, channels).permute(0, 1, 4, 2, 3).float()
+                else:
+                    y_hat = torch.clip(pred.clone().detach().float() * 255.0, 0., 255.)
+
                 y = batch.y.float()
                 eval_res = calculate_metrics(y_hat, y)
                 eval_res["loss"] = float(loss.item())
-                eval_res["entropy"] = float(entropy_average.item())
 
                 with torch.no_grad():
                     sample_and_save(
                         y_hat,
                         y,
-                        entropy_pred.float(),
+                        entropy_pred,
                         num_samples=2,
                         save_dir=Path(checkpoint.path) / Path("sample_images") / Path(pretty_name),
                         angles=batch.angles,
@@ -660,26 +697,26 @@ def train(args: TrainArgs):
                 interval_loss_per_gpu = np.mean(step_losses)
                 interval_loss_across_gpus = dist_mean(interval_loss_per_gpu)
 
-                stacked_tok_loss = torch.cat(step_tok_losses, dim=0)
-                interval_total_tok_loss_per_gpu = stacked_tok_loss.sum()
-                interval_total_tok_loss_across_gpus = dist_sum(
-                    interval_total_tok_loss_per_gpu, reduce_dtype=torch.bfloat16
-                )
+                # stacked_tok_loss = torch.cat(step_tok_losses, dim=0)
+                # interval_total_tok_loss_per_gpu = stacked_tok_loss.sum()
+                # interval_total_tok_loss_across_gpus = dist_sum(
+                #     interval_total_tok_loss_per_gpu, reduce_dtype=torch.bfloat16
+                # )
                 interval_total_n_bytes_per_gpu = n_bytes
                 interval_total_n_bytes_across_gpus = dist_sum(
                     n_bytes, reduce_dtype=torch.bfloat16
                 )
 
-                interval_bpb_per_gpu = (
-                    interval_total_tok_loss_per_gpu
-                    / math.log(2)
-                    / interval_total_n_bytes_per_gpu
-                )
-                interval_bpb_across_gpus = (
-                    interval_total_tok_loss_across_gpus
-                    / math.log(2)
-                    / interval_total_n_bytes_across_gpus
-                )
+                # interval_bpb_per_gpu = (
+                #     interval_total_tok_loss_per_gpu
+                #     / math.log(2)
+                #     / interval_total_n_bytes_per_gpu
+                # )
+                # interval_bpb_across_gpus = (
+                #     interval_total_tok_loss_across_gpus
+                #     / math.log(2)
+                #     / interval_total_n_bytes_across_gpus
+                # )
 
                 metric_dict = {
                     "global_step": train_state.step,
@@ -702,10 +739,10 @@ def train(args: TrainArgs):
                         "interval_per_gpu": to_py_num(interval_loss_per_gpu),
                         "interval_across_gpu": to_py_num(interval_loss_across_gpus),
                     },
-                    "bpb": {
-                        "interval_per_gpu": to_py_num(interval_bpb_per_gpu),
-                        "interval_across_gpus": to_py_num(interval_bpb_across_gpus),
-                    },
+                    # "bpb": {
+                    #     "interval_per_gpu": to_py_num(interval_bpb_per_gpu),
+                    #     "interval_across_gpus": to_py_num(interval_bpb_across_gpus),
+                    # },
                     "n_bytes": {
                         "interval_per_gpu": to_py_num(interval_total_n_bytes_per_gpu),
                         "interval_across_gpus": to_py_num(
@@ -732,8 +769,8 @@ def train(args: TrainArgs):
                     f"  acc: {train_state.acc_step}"
                     f"  loss_gpu: {round(to_py_num(interval_loss_per_gpu), 4):>7}"
                     f"  loss_avg: {round(to_py_num(interval_loss_across_gpus), 4):>7}"
-                    f"  bpb_gpu: {interval_bpb_per_gpu:3f}"
-                    f"  bpb_avg: {interval_bpb_across_gpus:3f}"
+                    # f"  bpb_gpu: {interval_bpb_per_gpu:3f}"
+                    # f"  bpb_avg: {interval_bpb_across_gpus:3f}"
                     f"  grad: {grad_norm:.2e}"
                     f"  flops: {FLOPS:.2e}"
                     f"  wps: {wps:.2e}"

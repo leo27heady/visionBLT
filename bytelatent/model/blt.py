@@ -2,7 +2,7 @@
 
 import logging
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 
 import torch
 from huggingface_hub import PyTorchModelHubMixin
@@ -478,6 +478,7 @@ def patch_ids_from_frames(
 
 
 class ByteLatentTransformerArgs(BaseTransformerArgs):
+    type_of_experiment: Literal["V-BLT", "V-BLT-MSE", "ViViT", "UNet3D"] = "V-BLT"
     # Basic model configuration
     seed: int = 42
     vocab_size: int = -1

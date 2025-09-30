@@ -184,6 +184,7 @@ model:
   tie_local_encoder_decoder: false
   tie_local_encoder_decoder_logits: false
   tokenize_with_bpe_delimiter: false
+  type_of_experiment: V-BLT
   use_fsdp: true
   use_local_encoder_transformer: true
   use_rope: true
@@ -232,7 +233,7 @@ shape_data:
   angle:
     max: 20
     min: 5
-  batch_size: 4
+  batch_size: 2
   context_size: 10
   gradual_complexity:
   - 1.0

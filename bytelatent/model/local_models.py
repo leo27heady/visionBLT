@@ -394,7 +394,7 @@ class PredictionHead(nn.Module):
         self.norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.output = nn.Linear(
             args.dim,
-            args.vision.pixel_vocab_size,
+            args.vision.pixel_vocab_size,  # 1
             bias=False,
         )
     
@@ -403,6 +403,7 @@ class PredictionHead(nn.Module):
         h_preds = F.dropout(h_preds, p=self.dropout, training=self.training)
         h_preds = self.output(h_preds)
         h_preds = h_preds.float()
+        # h_preds = h_preds.reshape(h_preds.shape[0], 10, 64, 64, 1).permute(0, 1, 4, 2, 3)
         return h_preds
     
     def init_weights(self, init_std):
